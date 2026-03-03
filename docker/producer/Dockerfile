@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /app
 
-CMD ["python", "producer_binance.py"]
+CMD ["python", "src/producer_binance.py"]

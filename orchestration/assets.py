@@ -20,17 +20,18 @@ SPARK_EVENTS_DIR = Path(os.environ.get("SPARK_EVENTS_DIR", "/opt/spark-events"))
 SPARK_MASTER = os.environ.get("SPARK_MASTER", "spark://spark-master:7077")
 
 SPARK_PACKAGES = ",".join([
-    "org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.5.0",
+    "org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.5.2",
+    "org.apache.iceberg:iceberg-aws-bundle:1.5.2",
     "org.apache.hadoop:hadoop-aws:3.3.4",
-    "com.amazonaws:aws-java-sdk-bundle:1.12.262",
+    "org.postgresql:postgresql:42.7.2",
 ])
 
 def _run_spark_job(context: AssetExecutionContext, script_name: str, extra_args: list[str] = None) -> None:
     logger = get_dagster_logger()
-    script_path = PROJECT_DIR / script_name
+    script_path = PROJECT_DIR / "src" / script_name
 
     if not script_path.exists():
-        raise FileNotFoundError(f"Không tìm thấy script: {script_path}")
+        raise FileNotFoundError(f"Script not found: {script_path}")
 
     SPARK_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -46,12 +47,12 @@ def _run_spark_job(context: AssetExecutionContext, script_name: str, extra_args:
     if extra_args:
         cmd.extend(extra_args)
 
-    logger.info("Chạy lệnh: %s", " ".join(cmd))
+    logger.info("Running command: %s", " ".join(cmd))
 
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,    # gộp stderr vào stdout để đọc một luồng
+        stderr=subprocess.STDOUT,    # merge stderr into stdout for a single stream
         text=True,
         bufsize=1,                   # line-buffered
         cwd=str(PROJECT_DIR),
@@ -66,18 +67,18 @@ def _run_spark_job(context: AssetExecutionContext, script_name: str, extra_args:
 
     if process.returncode != 0:
         raise Exception(
-            f"Spark job '{script_name}' thất bại với exit code {process.returncode}. "
-            f"Xem log ở Dagster UI hoặc Spark History Server (http://localhost:18080)."
+            f"Spark job '{script_name}' failed with exit code {process.returncode}. "
+            f"Check logs in Dagster UI or Spark History Server (http://localhost:18080)."
         )
 
-    logger.info("Spark job '%s' hoàn thành thành công.", script_name)
+    logger.info("Spark job '%s' completed successfully.", script_name)
 
 
 @asset(
     description=(
-        "Kéo dữ liệu nến 1 giờ (OHLCV) từ Binance API cho tất cả cặp USDT, "
-        "chỉ lấy phần mới kể từ lần chạy cuối, rồi ghi vào bảng Iceberg "
-        "local.crypto.historical_hourly trên MinIO."
+        "Pulls 1h OHLCV klines from Binance API for all USDT pairs, "
+        "fetches only rows newer than the last run, then writes to Iceberg "
+        "table local.crypto.historical_hourly on MinIO."
     ),
     group_name="ingestion",
 )
@@ -91,11 +92,11 @@ def iceberg_historical_klines(context: AssetExecutionContext) -> None:
 
 @asset(
     description=(
-        "Thực hiện 4 tác vụ bảo trì cho các bảng Iceberg: "
-        "(1) Compact file nhỏ thành file ~128MB, "
-        "(2) Gộp manifest để giảm overhead metadata, "
-        "(3) Xoá snapshot cũ hơn 48 giờ, "
-        "(4) Dọn file rác không còn được tham chiếu."
+        "Runs 4 maintenance tasks on Iceberg tables: "
+        "(1) Compact small files into ~128 MB files, "
+        "(2) Rewrite manifests to reduce metadata overhead, "
+        "(3) Expire snapshots older than 48 hours, "
+        "(4) Remove orphan files no longer referenced."
     ),
     group_name="maintenance",
 )
@@ -110,14 +111,14 @@ schedule_daily_klines = ScheduleDefinition(
     name="daily_kline_update",
     target=iceberg_historical_klines,
     cron_schedule="0 2 * * *",
-    description="Chạy hàng ngày lúc 02:00 AM để cập nhật nến mới vào Iceberg.",
+    description="Runs daily at 02:00 AM to ingest latest klines into Iceberg.",
 )
 
 schedule_weekly_maintenance = ScheduleDefinition(
     name="weekly_iceberg_maintenance",
     target=iceberg_table_maintenance,
     cron_schedule="0 3 * * 0",
-    description="Chạy mỗi Chủ Nhật lúc 03:00 AM để compact và dọn dẹp Iceberg.",
+    description="Runs every Sunday at 03:00 AM to compact and clean up Iceberg tables.",
 )
 
 defs = Definitions(

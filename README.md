@@ -114,7 +114,7 @@ Flink la **long-running streaming job** — khong qua Dagster, phai submit thu c
 
 ```bash
 docker exec flink-jobmanager \
-  flink run -py /app/ingest_flink_crypto.py \
+  flink run -py /app/src/ingest_flink_crypto.py \
   -d \
   --jobmanager flink-jobmanager:8081
 ```
@@ -129,8 +129,8 @@ Tuong tu, `ingest_crypto.py` la **long-running streaming job** — submit thu co
 docker exec spark-master \
   spark-submit \
   --master spark://spark-master:7077 \
-  --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.5.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262 \
-  /app/ingest_crypto.py
+  --packages org.apache.iceberg:iceberg-spark-runtime-3.4_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2,org.apache.hadoop:hadoop-aws:3.3.4,org.postgresql:postgresql:42.7.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.1 \
+  /app/src/ingest_crypto.py
 ```
 
 ### Dagster quan ly cai gi?
@@ -433,43 +433,44 @@ Dagster daemon (scheduler loop moi 30s)
 ```
 cryptoprice/
 ├── docker-compose.yml                   # Full stack, 13 services
-├── .env                                 # Secrets (KHONG commit git)
-├── spark-defaults.conf                  # Spark config (mounted vao spark-master)
+├── .env                                 # Secrets (DO NOT commit to git)
+├── spark-defaults.conf                  # Spark config (mounted into spark-master)
 ├── README.md
 │
-├── producer_binance.py                  # Binance WebSocket → Kafka producer
-├── ingest_flink_crypto.py               # Flink job: Kafka → KeyDB + InfluxDB
-├── ingest_crypto.py                     # Spark job: Kafka → Iceberg (streaming)
-├── ingest_historical_iceberg.py         # Spark job: Binance REST → Iceberg (batch)
-├── iceberg_maintenance.py               # Spark job: compact / expire snapshots
+├── src/
+│   ├── producer_binance.py              # Binance WebSocket → Kafka producer
+│   ├── ingest_flink_crypto.py           # Flink job: Kafka → KeyDB + InfluxDB
+│   ├── ingest_crypto.py                 # Spark Structured Streaming → Iceberg
+│   ├── ingest_historical_iceberg.py     # Spark batch: Binance REST → Iceberg
+│   └── iceberg_maintenance.py           # Spark: compact / expire Iceberg snapshots
 │
 ├── orchestration/
-│   ├── assets.py                        # Dagster assets (Spark job wrappers)
+│   ├── assets.py                        # Dagster assets wrapping Spark batch jobs
 │   └── workspace.yaml                   # Dagster workspace config
 │
 └── docker/
     ├── flink/
     │   ├── Dockerfile                   # PyFlink 1.18.1 + Kafka connector JAR
-    │   └── flink-conf.yaml              # Flink cluster config (bind 0.0.0.0)
+    │   └── flink-conf.yaml              # Flink cluster config
     │
     ├── trino/
-    │   └── etc/                         # Mount vao /etc/trino trong container
-    │       ├── config.properties        # coordinator, port, memory
+    │   └── etc/                         # Mounted to /etc/trino inside container
+    │       ├── config.properties        # coordinator, port, query memory
     │       ├── jvm.config               # -Xmx2G, G1GC
     │       ├── node.properties          # node.id, data-dir
     │       ├── log.properties           # log level
     │       └── catalog/
-    │           └── iceberg.properties   # connector → JDBC/PG + MinIO
+    │           └── iceberg.properties   # Iceberg connector: JDBC/PG + MinIO
     │
     ├── dagster/
     │   ├── Dockerfile                   # Python 3.11 + Spark 3.4.1 + Dagster 1.9
-    │   └── dagster.yaml                 # Storage: postgres, scheduler, launcher
+    │   └── dagster.yaml                 # Storage backend: postgres
     │
     ├── producer/
-    │   └── Dockerfile                   # Python 3.11 + kafka-python
+    │   └── Dockerfile                   # Python 3.11-slim + kafka-python
     │
     └── postgres/
-        └── init.sql                     # Khoi tao 2 databases + Iceberg schema
+        └── init.sql                     # Creates iceberg_catalog + dagster DBs with Iceberg schema
 ```
 
 ### PostgreSQL phuc vu 2 he thong
