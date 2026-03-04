@@ -8,7 +8,9 @@ Hệ thống streaming giá crypto real-time từ Binance, xử lý bằng Apach
 
 ## Kiến trúc tổng thể
 
-```
+![alt text](image.png)
+
+```text
   Binance WebSocket
         │
         ▼
