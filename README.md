@@ -4,7 +4,7 @@ Dự án streaming giá crypto real-time từ Binance WebSocket, xử lý bằng
 
 ## Kiến trúc
 
-=![alt text](image.png) 
+![alt text](image.png) 
 
 ## Yêu cầu
 
