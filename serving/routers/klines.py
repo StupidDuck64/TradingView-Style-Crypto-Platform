@@ -26,7 +26,9 @@ def _validate(symbol: str) -> str:
 
 def _base_interval(interval: str) -> str:
     """Pick the finest stored interval to serve as aggregation base."""
-    return "1m" if interval in ("1s", "1m", "5m", "15m") else "1h"
+    if interval == "1s":
+        return "1s"
+    return "1m" if interval in ("1m", "5m", "15m") else "1h"
 
 
 def _aggregate(candles: list[dict], target_ms: int) -> list[dict]:
@@ -117,11 +119,15 @@ async def get_klines(
             _query_influx_sync, symbol, "1m", needed, range_h,
         )
 
-    # Fallback: try KeyDB candle history (24 h of 1m candles)
+    # Fallback: try KeyDB candle sorted sets
     if not candles:
         r = await get_redis()
-        raw = await r.zrangebyscore(f"candle:history:{symbol}", "-inf", "+inf")
-        for item in raw:
+        # Try 1m first, then 1s
+        for keydb_key in (f"candle:1m:{symbol}", f"candle:1s:{symbol}"):
+            raw = await r.zrangebyscore(keydb_key, "-inf", "+inf")
+            if raw:
+                break
+        for item in raw if raw else []:
             c = json.loads(item)
             candles.append({
                 "openTime": int(c["t"]),

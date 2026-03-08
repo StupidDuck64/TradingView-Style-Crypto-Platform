@@ -47,7 +47,21 @@ async def stream(websocket: WebSocket, symbol: str = "", interval: str = "1m"):
 
 
 async def _build_candle(r, symbol: str, interval: str, target_ms: int) -> dict | None:
-    """Read the current candle from KeyDB, aggregating if interval > 1m."""
+    """Read the current candle from KeyDB, aggregating if needed."""
+    # 1s interval: stream directly from candle:1s sorted set
+    if interval == "1s":
+        raw = await r.zrevrange(f"candle:1s:{symbol}", 0, 0)
+        if raw:
+            c = json.loads(raw[0])
+            return {
+                "openTime": int(c["t"]),
+                "open": c["o"], "high": c["h"],
+                "low": c["l"], "close": c["c"],
+                "volume": c["v"],
+            }
+        return None
+
+    # 1m interval: use candle:latest hash
     if interval == "1m":
         data = await r.hgetall(f"candle:latest:{symbol}")
         if not data:
@@ -61,10 +75,10 @@ async def _build_candle(r, symbol: str, interval: str, target_ms: int) -> dict |
             "volume": float(data["volume"]),
         }
 
-    # For larger intervals, aggregate 1m candles from the history sorted set
+    # Larger intervals: aggregate 1m candles from candle:1m sorted set
     now_ms = int(time.time() * 1000)
     window_start = (now_ms // target_ms) * target_ms
-    raw = await r.zrangebyscore(f"candle:history:{symbol}", window_start, "+inf")
+    raw = await r.zrangebyscore(f"candle:1m:{symbol}", window_start, "+inf")
 
     if raw:
         candles = [json.loads(c) for c in raw]
@@ -77,7 +91,7 @@ async def _build_candle(r, symbol: str, interval: str, target_ms: int) -> dict |
             "volume": round(sum(c["v"] for c in candles), 8),
         }
 
-    # Fallback: use the latest 1m candle mapped to the target window
+    # Fallback: use candle:latest mapped to the target window
     data = await r.hgetall(f"candle:latest:{symbol}")
     if data:
         kline_start = int(data["kline_start"])
