@@ -137,9 +137,14 @@ class InfluxDBWriter(FlatMapFunction):
 
 
 class KeyDBKlineWriter(FlatMapFunction):
-    """Writes kline candles to KeyDB: candle:latest:{symbol} + candle:history:{symbol}."""
+    """Writes kline candles to KeyDB with interval-specific TTL:
+    - candle:1s:{symbol} → TTL 2 hours (for 1-second candles)
+    - candle:1m:{symbol} → TTL 7 days (for 1-minute candles)
+    - candle:latest:{symbol} → latest candle info (no TTL)
+    """
 
-    HISTORY_TTL_SEC = 86_400          # keep 24h of 1m candles
+    TTL_1S = 7_200        # 2 hours for 1-second candles
+    TTL_1M = 604_800      # 7 days for 1-minute candles
 
     def open(self, runtime_context):
         self._r = redis.Redis(
@@ -161,7 +166,9 @@ class KeyDBKlineWriter(FlatMapFunction):
             symbol      = value.get("symbol")
             if not symbol:
                 return []
+            interval    = value.get("interval", "1m")
             kline_start = int(value["kline_start"])
+            
             candle_json = json.dumps({
                 "t": kline_start,
                 "o": float(value["open"]),
@@ -173,8 +180,20 @@ class KeyDBKlineWriter(FlatMapFunction):
                 "n": int(value["trade_count"]),
                 "x": bool(value["is_closed"]),
             })
-            cutoff = kline_start - self.HISTORY_TTL_SEC * 1000
+            
+            # Determine TTL and key based on interval
+            if interval == "1s":
+                history_key = f"candle:1s:{symbol}"
+                ttl_sec = self.TTL_1S
+            else:  # 1m or other intervals
+                history_key = f"candle:1m:{symbol}"
+                ttl_sec = self.TTL_1M
+            
+            cutoff = kline_start - (ttl_sec * 1000)
+            
             pipe = self._r.pipeline()
+            
+            # Update latest candle (no TTL)
             pipe.hset(f"candle:latest:{symbol}", mapping={
                 "open":         float(value["open"]),
                 "high":         float(value["high"]),
@@ -185,10 +204,18 @@ class KeyDBKlineWriter(FlatMapFunction):
                 "trade_count":  int(value["trade_count"]),
                 "is_closed":    int(value["is_closed"]),
                 "kline_start":  kline_start,
-                "interval":     value.get("interval", "1m"),
+                "interval":     interval,
             })
-            pipe.zadd(f"candle:history:{symbol}", {candle_json: kline_start})
-            pipe.zremrangebyscore(f"candle:history:{symbol}", 0, cutoff)
+            
+            # Add to interval-specific sorted set
+            pipe.zadd(history_key, {candle_json: kline_start})
+            
+            # Remove old data beyond TTL
+            pipe.zremrangebyscore(history_key, 0, cutoff)
+            
+            # Set TTL on the sorted set key to auto-cleanup
+            pipe.expire(history_key, ttl_sec)
+            
             pipe.execute()
         except Exception as e:
             s = value.get("symbol") if isinstance(value, dict) else "unknown"
