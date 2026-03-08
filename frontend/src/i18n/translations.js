@@ -20,6 +20,7 @@ const translations = {
     // Chart tabs
     overview: "Overview",
     candlestick: "Candlestick",
+    chart: "Chart",
     orderBook: "Order Book",
     recentTrades: "Recent Trades",
 
@@ -137,6 +138,7 @@ const translations = {
     // Chart tabs
     overview: "Tổng quan",
     candlestick: "Nến",
+    chart: "Biểu đồ",
     orderBook: "Sổ lệnh",
     recentTrades: "Giao dịch gần đây",
 

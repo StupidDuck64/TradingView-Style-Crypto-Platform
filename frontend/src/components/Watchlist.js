@@ -21,7 +21,6 @@ const Watchlist = ({
       ? items.filter((item) => starredSymbols.includes(item.symbol))
       : items;
   const totalPages = Math.max(1, Math.ceil(allFiltered.length / PAGE_SIZE));
-  // Reset page if it overflows after filter change
   const safePage = Math.min(page, totalPages - 1);
   const filteredItems = allFiltered.slice(
     safePage * PAGE_SIZE,
@@ -29,33 +28,56 @@ const Watchlist = ({
   );
 
   return (
-    <aside className="w-64 bg-gray-800 p-4 rounded-lg overflow-y-auto">
+    <div className="bg-gray-800 p-3 rounded-lg h-full flex flex-col overflow-hidden">
       <h3 className="text-xl font-semibold mb-2 text-blue-400">
         {t("watchlist")}
       </h3>
-      <div className="flex gap-1 mb-3">
-        <button
-          onClick={() => onFilterChange("all")}
-          className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-            filter === "all"
-              ? "bg-blue-600 text-white"
-              : "text-gray-400 hover:text-white hover:bg-gray-700"
-          }`}
-        >
-          {t("all")}
-        </button>
-        <button
-          onClick={() => onFilterChange("starred")}
-          className={`flex items-center gap-1 px-3 py-1 rounded text-xs font-medium transition-colors ${
-            filter === "starred"
-              ? "bg-blue-600 text-white"
-              : "text-gray-400 hover:text-white hover:bg-gray-700"
-          }`}
-        >
-          <Star size={10} /> {t("starred")}
-        </button>
+      <div className="flex items-center mb-3">
+        <div className="flex gap-1">
+          <button
+            onClick={() => onFilterChange("all")}
+            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+              filter === "all"
+                ? "bg-blue-600 text-white"
+                : "text-gray-400 hover:text-white hover:bg-gray-700"
+            }`}
+          >
+            {t("all")}
+          </button>
+          <button
+            onClick={() => onFilterChange("starred")}
+            className={`flex items-center gap-1 px-3 py-1 rounded text-xs font-medium transition-colors ${
+              filter === "starred"
+                ? "bg-blue-600 text-white"
+                : "text-gray-400 hover:text-white hover:bg-gray-700"
+            }`}
+          >
+            <Star size={10} /> {t("starred")}
+          </button>
+        </div>
+        {totalPages > 1 && (
+          <div className="flex items-center gap-1 ml-auto">
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={safePage === 0}
+              className="p-0.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <span className="text-xs text-gray-500">
+              {safePage + 1}/{totalPages}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={safePage >= totalPages - 1}
+              className="p-0.5 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronRight size={14} />
+            </button>
+          </div>
+        )}
       </div>
-      <ul className="space-y-2">
+      <ul className="flex-1 min-h-0 overflow-y-auto space-y-1">
         {filteredItems.map((item) => {
           const isActive = selectedSymbol === item.symbol;
           const isStarred = starredSymbols.includes(item.symbol);
@@ -105,28 +127,7 @@ const Watchlist = ({
           </li>
         )}
       </ul>
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-2">
-          <button
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
-            disabled={safePage === 0}
-            className="p-1 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronLeft size={16} />
-          </button>
-          <span className="text-xs text-gray-500">
-            {safePage + 1} / {totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-            disabled={safePage >= totalPages - 1}
-            className="p-1 rounded text-gray-400 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          >
-            <ChevronRight size={16} />
-          </button>
-        </div>
-      )}
-    </aside>
+    </div>
   );
 };
 

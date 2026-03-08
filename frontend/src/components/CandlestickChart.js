@@ -16,7 +16,6 @@ import {
 } from "../services/marketDataService";
 import MarketSelector from "./MarketSelector";
 import DateRangePicker from "./DateRangePicker";
-import OverviewChart from "./OverviewChart";
 import OrderBook from "./OrderBook";
 import RecentTrades from "./RecentTrades";
 import {
@@ -29,7 +28,6 @@ import {
 } from "./chart/chartConstants";
 import { calcSMA, calcEMA, calcRSI, calcMFI } from "./chart/indicatorUtils";
 import IndicatorPanel from "./chart/IndicatorPanel";
-import OscillatorPane from "./chart/OscillatorPane";
 import OHLCVBar from "./chart/OHLCVBar";
 
 const CandlestickChart = ({
@@ -40,6 +38,8 @@ const CandlestickChart = ({
   starredSymbols = [],
   onToggleStar,
   onSymbolChange,
+  onActiveTabChange,
+  onCandlesChange,
 }) => {
   const { t } = useI18n();
   const containerRef = useRef(null);
@@ -49,6 +49,8 @@ const CandlestickChart = ({
   const sma20Ref = useRef(null);
   const sma50Ref = useRef(null);
   const emaRef = useRef(null);
+  const rsiSeriesRef = useRef(null);
+  const mfiSeriesRef = useRef(null);
   const candlesRef = useRef([]);
 
   const [symbol, setSymbol] = useState(symbolProp || defaultSymbol);
@@ -58,7 +60,7 @@ const CandlestickChart = ({
   const [indSettings, setIndSettings] = useState(() =>
     JSON.parse(JSON.stringify(DEFAULT_INDICATOR_SETTINGS)),
   );
-  const [activeTab, setActiveTab] = useState("candlestick");
+  const [activeTab, setActiveTab] = useState("chart");
   const [candles, setCandles] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
   const [fetchError, setFetchError] = useState(null);
@@ -105,6 +107,7 @@ const CandlestickChart = ({
       rightPriceScale: {
         borderColor: THEME.borderColor,
         scaleMargins: { top: 0.05, bottom: 0.25 },
+        minimumWidth: 80,
       },
       timeScale: {
         borderColor: THEME.borderColor,
@@ -158,12 +161,37 @@ const CandlestickChart = ({
       crosshairMarkerVisible: false,
       visible: false,
     });
+    // RSI & MFI on a separate left-side oscillator scale (bottom 20%)
+    const rsiSeries = chart.addSeries(LineSeries, {
+      color: THEME.rsi,
+      lineWidth: 1.5,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      visible: false,
+      priceScaleId: "oscillator",
+    });
+    const mfiSeries = chart.addSeries(LineSeries, {
+      color: THEME.mfi,
+      lineWidth: 1.5,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      visible: false,
+      priceScaleId: "oscillator",
+    });
+    chart.priceScale("oscillator").applyOptions({
+      scaleMargins: { top: 0.75, bottom: 0 },
+      visible: false,
+    });
     chartRef.current = chart;
     candleRef.current = cs;
     volumeRef.current = vs;
     sma20Ref.current = s20;
     sma50Ref.current = s50;
     emaRef.current = ema;
+    rsiSeriesRef.current = rsiSeries;
+    mfiSeriesRef.current = mfiSeries;
     chart.subscribeCrosshairMove((param) => {
       if (!param.time || (param.point && param.point.x < 0)) {
         setTooltip(null);
@@ -205,6 +233,7 @@ const CandlestickChart = ({
       if (!candleRef.current) return;
       setCandles(data);
       candlesRef.current = data;
+      if (onCandlesChange) onCandlesChange(data);
       setNoData(data.length === 0);
       candleRef.current.setData(data);
       const vs = volumeRef.current;
@@ -222,11 +251,15 @@ const CandlestickChart = ({
         sma50Ref.current.setData(calcSMA(data, indSettings.sma50.period));
       if (emaRef.current)
         emaRef.current.setData(calcEMA(data, indSettings.ema.period));
+      if (rsiSeriesRef.current)
+        rsiSeriesRef.current.setData(calcRSI(data, indSettings.rsi.period));
+      if (mfiSeriesRef.current)
+        mfiSeriesRef.current.setData(calcMFI(data, indSettings.mfi.period));
       if (chartRef.current) chartRef.current.timeScale().fitContent();
       if (data.length > 0)
         setTooltip({ ...data[data.length - 1], timeLabel: "" });
     },
-    [indSettings],
+    [indSettings, onCandlesChange],
   );
 
   // Load data when symbol or timeframe changes (live mode) + auto-refresh
@@ -280,6 +313,7 @@ const CandlestickChart = ({
           next[next.length - 1] = last;
           candlesRef.current = next;
           setCandles(next);
+          if (onCandlesChange) onCandlesChange(next);
           setTooltip((tip) =>
             tip ? { ...tip, ...last, timeLabel: tip.timeLabel } : null,
           );
@@ -324,13 +358,10 @@ const CandlestickChart = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, historicalRange, retryCount]);
 
-  // Re-layout chart when candlestick tab becomes visible again
+  // Re-layout chart when chart tab becomes visible again
   useEffect(() => {
-    if (
-      activeTab === "candlestick" &&
-      chartRef.current &&
-      containerRef.current
-    ) {
+    if (onActiveTabChange) onActiveTabChange(activeTab);
+    if (activeTab === "chart" && chartRef.current && containerRef.current) {
       const { width, height } = containerRef.current.getBoundingClientRect();
       if (width > 0 && height > 0) {
         chartRef.current.resize(width, height);
@@ -372,6 +403,31 @@ const CandlestickChart = ({
     }
     if (volumeRef.current)
       volumeRef.current.applyOptions({ visible: cfgV.visible });
+    // RSI / MFI on main chart oscillator scale
+    const cfgR = indSettings.rsi;
+    const cfgM = indSettings.mfi;
+    if (rsiSeriesRef.current) {
+      rsiSeriesRef.current.applyOptions({
+        visible: cfgR.visible,
+        color: cfgR.color,
+        lineWidth: cfgR.lineWidth || 1.5,
+      });
+      rsiSeriesRef.current.setData(calcRSI(candles, cfgR.period));
+    }
+    if (mfiSeriesRef.current) {
+      mfiSeriesRef.current.applyOptions({
+        visible: cfgM.visible,
+        color: cfgM.color,
+        lineWidth: cfgM.lineWidth || 1.5,
+      });
+      mfiSeriesRef.current.setData(calcMFI(candles, cfgM.period));
+    }
+    // Show/hide the oscillator price scale when either is visible
+    if (chartRef.current) {
+      chartRef.current
+        .priceScale("oscillator")
+        .applyOptions({ visible: cfgR.visible || cfgM.visible });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indSettings, candles]);
 
@@ -383,14 +439,6 @@ const CandlestickChart = ({
     ? ((priceDiff / firstCandle.open) * 100).toFixed(2)
     : null;
   const isUp = priceDiff >= 0;
-
-  // RSI / MFI computed data (shifted for local timezone)
-  const rsiData = indSettings.rsi.visible
-    ? calcRSI(candles, indSettings.rsi.period)
-    : null;
-  const mfiData = indSettings.mfi.visible
-    ? calcMFI(candles, indSettings.mfi.period)
-    : null;
 
   const handleExportChart = useCallback(() => {
     if (!containerRef.current) return;
@@ -531,9 +579,7 @@ const CandlestickChart = ({
 
       {/* Tab content — candlestick chart is always mounted to preserve the
            lightweight-charts instance; visibility is toggled via CSS. */}
-      <div
-        style={{ display: activeTab === "candlestick" ? "contents" : "none" }}
-      >
+      <div style={{ display: activeTab === "chart" ? "contents" : "none" }}>
         {/* OHLCV bar */}
         <div className="px-3 py-1 bg-gray-900 border-b border-gray-800 min-h-[28px]">
           <OHLCVBar data={tooltip} />
@@ -573,30 +619,7 @@ const CandlestickChart = ({
           )}
           {children}
         </div>
-        {/* Oscillator panes */}
-        {rsiData && rsiData.length > 0 && (
-          <OscillatorPane
-            key={`rsi-${indSettings.rsi.period}-${indSettings.rsi.color}`}
-            data={rsiData}
-            settings={indSettings.rsi}
-            label={`RSI(${indSettings.rsi.period})`}
-          />
-        )}
-        {mfiData && mfiData.length > 0 && (
-          <OscillatorPane
-            key={`mfi-${indSettings.mfi.period}-${indSettings.mfi.color}`}
-            data={mfiData}
-            settings={indSettings.mfi}
-            label={`MFI(${indSettings.mfi.period})`}
-          />
-        )}
       </div>
-
-      {activeTab === "overview" && (
-        <div className="flex-1 min-h-0">
-          <OverviewChart symbol={symbol} candles={candles} />
-        </div>
-      )}
 
       {activeTab === "orderBook" && (
         <div className="flex-1 min-h-0">

@@ -1,4 +1,4 @@
-import { BarChart3, Eye, BookOpen, ArrowLeftRight } from "lucide-react";
+import { BarChart3, BookOpen, ArrowLeftRight } from "lucide-react";
 
 export const THEME = {
   background: "#1a1d26",
@@ -58,16 +58,10 @@ export function localTickMarkFormatter(time, tickMarkType, locale) {
 // Real-time polling interval (ms) — constant for all timeframes
 export const REALTIME_POLL_MS = 2000;
 
-export const CHART_TABS = [
-  "candlestick",
-  "overview",
-  "orderBook",
-  "recentTrades",
-];
+export const CHART_TABS = ["chart", "orderBook", "recentTrades"];
 
 export const TAB_ICONS = {
-  candlestick: BarChart3,
-  overview: Eye,
+  chart: BarChart3,
   orderBook: BookOpen,
   recentTrades: ArrowLeftRight,
 };

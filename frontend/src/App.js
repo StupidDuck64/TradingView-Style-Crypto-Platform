@@ -1,9 +1,10 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useRef } from "react";
 import CandlestickChart from "./components/CandlestickChart";
 import DrawingToolbar from "./components/DrawingToolbar";
 import ChartOverlay from "./components/ChartOverlay";
 import Header from "./components/Header";
 import Watchlist from "./components/Watchlist";
+import OverviewChart from "./components/OverviewChart";
 import { DEFAULT_TOOL_SETTINGS } from "./components/ToolSettingsPopup";
 import { fetchTickers, fetchSymbols } from "./services/marketDataService";
 import { loadFromStorage, saveToStorage } from "./utils/storageHelpers";
@@ -147,6 +148,36 @@ const TradingDashboard = () => {
     );
   }, []);
 
+  // State lifted from CandlestickChart for Overview + DrawingToolbar gating
+  const [chartActiveTab, setChartActiveTab] = useState("chart");
+  const [chartCandles, setChartCandles] = useState([]);
+
+  // Resizable right sidebar
+  const SIDEBAR_MIN = 280;
+  const SIDEBAR_MAX = 520;
+  const SIDEBAR_DEFAULT = 340;
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const dragging = useRef(false);
+
+  const onDragStart = useCallback((e) => {
+    e.preventDefault();
+    dragging.current = true;
+    const onMove = (ev) => {
+      if (!dragging.current) return;
+      const newW = window.innerWidth - ev.clientX;
+      setSidebarWidth(Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, newW)));
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
+
+  const isChartTab = chartActiveTab === "chart";
+
   return (
     <div className="bg-gray-900 text-white min-h-screen font-sans flex flex-col">
       <Header showNavDrawer={showNavDrawer} onToggleDrawer={setShowNavDrawer} />
@@ -176,19 +207,25 @@ const TradingDashboard = () => {
         </div>
       )}
 
-      <main className="flex-grow p-6 overflow-hidden flex">
-        {/* Drawing Toolbar */}
-        <div className="mr-3 flex-shrink-0">
-          <DrawingToolbar
-            activeTool={activeTool}
-            onToolChange={setActiveTool}
-            onClearAll={handleClearAll}
-            toolSettings={toolSettings}
-            onToolSettingsChange={handleToolSettingsChange}
-          />
-        </div>
+      <main
+        className="flex-grow overflow-hidden flex"
+        style={{ padding: "12px 16px" }}
+      >
+        {/* Drawing Toolbar — only visible on Chart tab */}
+        {isChartTab && (
+          <div className="mr-2 flex-shrink-0">
+            <DrawingToolbar
+              activeTool={activeTool}
+              onToolChange={setActiveTool}
+              onClearAll={handleClearAll}
+              toolSettings={toolSettings}
+              onToolSettingsChange={handleToolSettingsChange}
+            />
+          </div>
+        )}
 
-        <div className="flex-grow mr-4 flex flex-col">
+        {/* Chart area */}
+        <div className="flex-grow flex flex-col" style={{ minWidth: 0 }}>
           <div
             className="bg-gray-900 rounded-lg shadow-lg flex-grow"
             style={{ minHeight: 0 }}
@@ -199,9 +236,11 @@ const TradingDashboard = () => {
               starredSymbols={starredSymbols}
               onToggleStar={handleToggleStar}
               onSymbolChange={handleSymbolSelect}
+              onActiveTabChange={setChartActiveTab}
+              onCandlesChange={setChartCandles}
             >
               <ChartOverlay
-                activeTool={activeTool}
+                activeTool={isChartTab ? activeTool : "cursor"}
                 drawings={drawings}
                 onAddDrawing={handleAddDrawing}
                 toolSettings={toolSettings}
@@ -210,15 +249,39 @@ const TradingDashboard = () => {
           </div>
         </div>
 
-        <Watchlist
-          items={watchlistItems}
-          selectedSymbol={selectedSymbol}
-          starredSymbols={starredSymbols}
-          filter={watchlistFilter}
-          onFilterChange={setWatchlistFilter}
-          onSymbolSelect={handleSymbolSelect}
-          onToggleStar={handleToggleStar}
-        />
+        {/* Drag handle */}
+        <div
+          onMouseDown={onDragStart}
+          className="flex-shrink-0 cursor-col-resize flex items-center justify-center group"
+          style={{ width: 6, margin: "0 2px" }}
+        >
+          <div className="w-[3px] h-10 rounded-full bg-gray-700 group-hover:bg-blue-500 transition-colors" />
+        </div>
+
+        {/* Right sidebar: Watchlist + Overview */}
+        <aside
+          className="flex-shrink-0 flex flex-col gap-2 overflow-hidden"
+          style={{ width: sidebarWidth }}
+        >
+          <div className="min-h-0" style={{ flex: 6.5 }}>
+            <Watchlist
+              items={watchlistItems}
+              selectedSymbol={selectedSymbol}
+              starredSymbols={starredSymbols}
+              filter={watchlistFilter}
+              onFilterChange={setWatchlistFilter}
+              onSymbolSelect={handleSymbolSelect}
+              onToggleStar={handleToggleStar}
+            />
+          </div>
+          {/* Overview section */}
+          <div
+            className="min-h-0 bg-gray-800 rounded-lg overflow-y-auto"
+            style={{ flex: 3.5 }}
+          >
+            <OverviewChart symbol={selectedSymbol} candles={chartCandles} />
+          </div>
+        </aside>
       </main>
     </div>
   );
