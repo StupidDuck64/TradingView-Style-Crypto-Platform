@@ -55,6 +55,23 @@ export function localTickMarkFormatter(time, tickMarkType, locale) {
   }
 }
 
+/**
+ * Crosshair / tooltip time formatter.
+ * lightweight-charts uses this for the time label that appears on the
+ * x-axis when hovering.  Without it the label defaults to UTC.
+ */
+export function localTimeFormatter(time) {
+  const d = new Date(time * 1000);
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
 // Real-time polling interval (ms) — constant for all timeframes
 export const REALTIME_POLL_MS = 2000;
 

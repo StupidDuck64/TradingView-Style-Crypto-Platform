@@ -58,6 +58,7 @@ spark = (
     .config("spark.hadoop.fs.s3a.aws.credentials.provider",
             "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
     .config("spark.sql.defaultCatalog", "iceberg_catalog")
+    .config("spark.cores.max", "2")
     .getOrCreate()
 )
 spark.sparkContext.setLogLevel("WARN")

@@ -372,6 +372,7 @@ def build_spark():
                 "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
         .config("spark.sql.defaultCatalog", "iceberg_catalog")
         .config("spark.sql.shuffle.partitions", "8")
+        .config("spark.cores.max", "2")
         .getOrCreate()
     )
 

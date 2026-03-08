@@ -33,6 +33,7 @@ echo " Spark Master đã sẵn sàng!"
 # Submit Spark Job chạy ngầm
 docker exec -d spark-master /opt/spark/bin/spark-submit \
   --master spark://spark-master:7077 \
+  --total-executor-cores 1 \
   --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2,org.apache.hadoop:hadoop-aws:3.3.4,org.postgresql:postgresql:42.7.2,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5" \
   --conf spark.driver.memory=2g \
   --conf spark.executor.memory=2g \

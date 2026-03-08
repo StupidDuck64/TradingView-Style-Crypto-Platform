@@ -5,7 +5,7 @@ import {
   LineStyle,
   LineSeries,
 } from "lightweight-charts";
-import { THEME, localTickMarkFormatter } from "./chartConstants";
+import { THEME, localTickMarkFormatter, localTimeFormatter } from "./chartConstants";
 
 const OscillatorPane = ({ data, settings, label }) => {
   const ref = useRef(null);
@@ -24,6 +24,10 @@ const OscillatorPane = ({ data, settings, label }) => {
       grid: {
         vertLines: { color: THEME.gridColor },
         horzLines: { color: THEME.gridColor },
+      },
+      localization: {
+        locale: navigator.language || "en-US",
+        timeFormatter: localTimeFormatter,
       },
       crosshair: { mode: CrosshairMode.Normal },
       rightPriceScale: {

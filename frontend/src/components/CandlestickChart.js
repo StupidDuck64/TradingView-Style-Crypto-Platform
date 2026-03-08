@@ -25,6 +25,7 @@ import {
   TAB_ICONS,
   DEFAULT_INDICATOR_SETTINGS,
   localTickMarkFormatter,
+  localTimeFormatter,
 } from "./chart/chartConstants";
 import { calcSMA, calcEMA, calcRSI, calcMFI } from "./chart/indicatorUtils";
 import IndicatorPanel from "./chart/IndicatorPanel";
@@ -94,6 +95,7 @@ const CandlestickChart = ({
       },
       localization: {
         locale: navigator.language || "en-US",
+        timeFormatter: localTimeFormatter,
       },
       grid: {
         vertLines: { color: THEME.gridColor, style: LineStyle.Solid },
