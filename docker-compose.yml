@@ -189,6 +189,7 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      SCHEMA_REGISTRY_URL: http://schema-registry:8080/apis/ccompat/v7
     volumes:
       - ./:/app
       - flink-checkpoints:/tmp/flink-checkpoints
@@ -200,6 +201,8 @@ services:
       influxdb:
         condition: service_healthy
       keydb:
+        condition: service_healthy
+      schema-registry:
         condition: service_healthy
 
   flink-taskmanager:
@@ -221,6 +224,7 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
+      SCHEMA_REGISTRY_URL: http://schema-registry:8080/apis/ccompat/v7
     volumes:
       - ./:/app
       - flink-checkpoints:/tmp/flink-checkpoints
@@ -455,6 +459,7 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
       KLINE_INTERVAL: "1s"
+      SCHEMA_REGISTRY_URL: http://schema-registry:8080/apis/ccompat/v7
     volumes:
       - ./:/app
     networks:
@@ -487,11 +492,6 @@ services:
     depends_on:
       keydb:
         condition: service_healthy
-      influxdb:
-        condition: service_healthy
-    command: >
-      sh -c "
-        apk add --no-cache dcron &&
-        echo '* * * * * cd /app && python3 src/aggregate_candles.py --mode 1s-to-1m >> /var/log/aggregator.log 2>&1' > /etc/crontabs/root &&
-        crond -f -l 2
-      "
+
+# candle-aggregator service REMOVED — 1s→1m aggregation now handled
+# in-flight by Flink KlineWindowAggregator (zero extra containers).
