@@ -31,6 +31,7 @@ services:
     image: apache/kafka:3.9.0
     container_name: kafka
     hostname: kafka
+    restart: unless-stopped
     ports:
       - "9092:9092"
     environment:
@@ -72,6 +73,7 @@ services:
     image: apicurio/apicurio-registry-mem:2.6.2.Final
     container_name: schema-registry
     hostname: schema-registry
+    restart: unless-stopped
     ports:
       - "8085:8080"
     environment:
@@ -92,6 +94,7 @@ services:
     image: minio/minio:latest
     container_name: minio
     hostname: minio
+    restart: unless-stopped
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -128,11 +131,13 @@ services:
       "
     networks:
       - crypto-net
+    restart: unless-stopped
 
   influxdb:
     image: influxdb:2.7
     container_name: influxdb
     hostname: influxdb
+    restart: unless-stopped
     ports:
       - "8086:8086"
     environment:
@@ -157,6 +162,7 @@ services:
     image: postgres:16-alpine
     container_name: postgres
     hostname: postgres
+    restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
@@ -178,6 +184,7 @@ services:
     image: eqalpha/keydb:latest
     container_name: keydb
     hostname: keydb
+    restart: unless-stopped
     ports:
       - "6379:6379"
     command: keydb-server --save 60 1 --loglevel warning
@@ -201,6 +208,7 @@ services:
     image: cryptoprice/flink:1.18.1
     container_name: flink-jobmanager
     hostname: flink-jobmanager
+    restart: unless-stopped
     ports:
       - "8081:8081" # Flink Web UI
     command: jobmanager
@@ -238,6 +246,7 @@ services:
     image: cryptoprice/flink:1.18.1
     container_name: flink-taskmanager
     hostname: flink-taskmanager
+    restart: unless-stopped
     command: taskmanager
     environment:
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
@@ -265,6 +274,7 @@ services:
       context: ./docker/spark
     container_name: spark-master
     hostname: spark-master
+    restart: unless-stopped
     ports:
       - "7077:7077"
       - "8082:8080" # Spark Master UI
@@ -299,6 +309,7 @@ services:
       context: ./docker/spark
     container_name: spark-worker
     hostname: spark-worker
+    restart: unless-stopped
     environment:
       SPARK_MODE: worker
       SPARK_MASTER_URL: spark://spark-master:7077
@@ -330,6 +341,7 @@ services:
     image: cryptoprice/trino:442
     container_name: trino
     hostname: trino
+    restart: unless-stopped
     ports:
       - "8083:8080" # Trino UI (avoid conflict with spark UI on 8082)
     environment:
@@ -359,6 +371,7 @@ services:
     image: cryptoprice/dagster:latest
     container_name: dagster-webserver
     hostname: dagster-webserver
+    restart: unless-stopped
     ports:
       - "3000:3000"
     command: dagster-webserver -h 0.0.0.0 -p 3000 -w /app/orchestration/workspace.yaml
@@ -389,6 +402,7 @@ services:
       context: ./docker/dagster
     image: cryptoprice/dagster:latest
     container_name: dagster-daemon
+    restart: unless-stopped
     command: dagster-daemon run -w /app/orchestration/workspace.yaml
     environment:
       DAGSTER_HOME: /dagster-home
