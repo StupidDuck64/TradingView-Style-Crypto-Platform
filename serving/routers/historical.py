@@ -67,7 +67,7 @@ def _query_trino_historical(
             SELECT
                 open_time,
                 open, high, low, close, volume
-            FROM crypto.historical_hourly
+            FROM crypto_lakehouse.historical_hourly
             WHERE symbol = ?
               AND open_time >= ?
               AND open_time < ?
@@ -117,9 +117,13 @@ async def get_historical_klines(
         raise HTTPException(400, "Date range cannot exceed 1 year")
 
     # Try coin_klines_hourly first (Flink-aggregated)
-    candles = await asyncio.to_thread(
-        _query_trino_hourly, symbol, startTime, endTime, limit,
-    )
+    candles = []
+    try:
+        candles = await asyncio.to_thread(
+            _query_trino_hourly, symbol, startTime, endTime, limit,
+        )
+    except Exception:
+        pass
 
     # Fallback to historical_hourly (Binance backfill)
     if not candles:
