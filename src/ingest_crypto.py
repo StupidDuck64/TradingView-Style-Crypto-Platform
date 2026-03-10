@@ -1,7 +1,9 @@
 ﻿#!/usr/bin/env python3
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, current_timestamp, from_json
+from pyspark.sql.functions import col, current_timestamp, udf, expr
+from pyspark.sql.avro.functions import from_avro
 from pyspark.sql.types import (
+    BinaryType,
     BooleanType,
     DoubleType,
     LongType,
@@ -11,6 +13,7 @@ from pyspark.sql.types import (
 )
 
 import os
+import json
 
 KAFKA_SERVER     = os.environ.get("KAFKA_BOOTSTRAP",  "kafka:9092")
 MINIO_ENDPOINT   = os.environ.get("MINIO_ENDPOINT",   "http://minio:9000")
@@ -106,7 +109,74 @@ klines_schema = StructType([
 ])
 
 
-def read_kafka(topic: str):
+# ══════════════════════════════════════════════════════════════════════════════
+# Avro Schema Definitions (must match producer schemas)
+# ══════════════════════════════════════════════════════════════════════════════
+
+TICKER_AVRO_SCHEMA = json.dumps({
+    "type": "record",
+    "name": "Ticker",
+    "namespace": "com.cryptoprice",
+    "fields": [
+        {"name": "event_time", "type": "long"},
+        {"name": "symbol", "type": "string"},
+        {"name": "close", "type": "double"},
+        {"name": "bid", "type": "double"},
+        {"name": "ask", "type": "double"},
+        {"name": "h24_open", "type": "double"},
+        {"name": "h24_high", "type": "double"},
+        {"name": "h24_low", "type": "double"},
+        {"name": "h24_volume", "type": "double"},
+        {"name": "h24_quote_volume", "type": "double"},
+        {"name": "h24_price_change", "type": "double"},
+        {"name": "h24_price_change_pct", "type": "double"},
+        {"name": "h24_trade_count", "type": "long"}
+    ]
+})
+
+TRADES_AVRO_SCHEMA = json.dumps({
+    "type": "record",
+    "name": "AggTrade",
+    "namespace": "com.cryptoprice",
+    "fields": [
+        {"name": "event_time", "type": "long"},
+        {"name": "symbol", "type": "string"},
+        {"name": "agg_trade_id", "type": "long"},
+        {"name": "price", "type": "double"},
+        {"name": "quantity", "type": "double"},
+        {"name": "trade_time", "type": "long"},
+        {"name": "is_buyer_maker", "type": "boolean"}
+    ]
+})
+
+KLINES_AVRO_SCHEMA = json.dumps({
+    "type": "record",
+    "name": "Kline",
+    "namespace": "com.cryptoprice",
+    "fields": [
+        {"name": "event_time", "type": "long"},
+        {"name": "symbol", "type": "string"},
+        {"name": "kline_start", "type": "long"},
+        {"name": "kline_close", "type": "long"},
+        {"name": "interval", "type": "string"},
+        {"name": "open", "type": "double"},
+        {"name": "high", "type": "double"},
+        {"name": "low", "type": "double"},
+        {"name": "close", "type": "double"},
+        {"name": "volume", "type": "double"},
+        {"name": "quote_volume", "type": "double"},
+        {"name": "trade_count", "type": "long"},
+        {"name": "is_closed", "type": "boolean"}
+    ]
+})
+
+
+def read_kafka(topic: str, avro_schema: str):
+    """
+    Read from Kafka and deserialize Confluent Avro format.
+    Confluent wire format: [magic_byte:1][schema_id:4][avro_binary:N]
+    We need to strip first 5 bytes before passing to from_avro()
+    """
     return (
         spark.readStream
         .format("kafka")
@@ -116,7 +186,10 @@ def read_kafka(topic: str):
         .option("failOnDataLoss", "false")
         .option("maxOffsetsPerTrigger", 500_000)
         .load()
-        .selectExpr("CAST(value AS STRING) AS value")
+        # Strip Confluent wire format header (5 bytes: magic + schema ID)
+        .selectExpr("substring(value, 6, length(value)-5) as avro_value")
+        .select(from_avro(col("avro_value"), avro_schema).alias("data"))
+        .select("data.*")
     )
 
 
@@ -185,9 +258,7 @@ spark.sql("""
 
 
 ticker_df = (
-    read_kafka("crypto_ticker")
-    .select(from_json(col("value"), ticker_schema).alias("d"))
-    .select("d.*")
+    read_kafka("crypto_ticker", TICKER_AVRO_SCHEMA)
     .filter(col("event_time").isNotNull())
     .withColumn("event_timestamp", (col("event_time") / 1000).cast("timestamp"))
     .withColumn("ingested_at", current_timestamp())
@@ -213,9 +284,7 @@ query_ticker = (
 )
 
 trades_df = (
-    read_kafka("crypto_trades")
-    .select(from_json(col("value"), trades_schema).alias("d"))
-    .select("d.*")
+    read_kafka("crypto_trades", TRADES_AVRO_SCHEMA)
     .filter(col("event_time").isNotNull())
     .withColumn("event_timestamp", (col("event_time") / 1000).cast("timestamp"))
     .withColumn("trade_timestamp",  (col("trade_time") / 1000).cast("timestamp"))
@@ -232,9 +301,7 @@ query_trades = (
 )
 
 klines_df = (
-    read_kafka("crypto_klines")
-    .select(from_json(col("value"), klines_schema).alias("d"))
-    .select("d.*")
+    read_kafka("crypto_klines", KLINES_AVRO_SCHEMA)
     .filter(col("kline_start").isNotNull())
     .withColumn("kline_timestamp", (col("kline_start") / 1000).cast("timestamp"))
     .withColumn("ingested_at", current_timestamp())
