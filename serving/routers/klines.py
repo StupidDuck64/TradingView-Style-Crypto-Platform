@@ -177,8 +177,11 @@ async def get_klines(
 
     # PRIORITY 2: Query InfluxDB for historical data
     # For endTime (scroll-left) queries, always go to InfluxDB.
-    # For regular queries, only if KeyDB doesn't have enough.
-    if endTime or len(candles) < limit:
+    # For regular queries, supplement KeyDB if it doesn't have enough raw 1m
+    # candles to produce `limit` target-interval candles after aggregation.
+    # KeyDB always stores 1m data, so we need limit*(target_sec//60) raw candles.
+    raw_needed = limit * max(target_sec // 60, 1)
+    if endTime or len(candles) < raw_needed:
         influx_candles = await asyncio.to_thread(
             _query_influx_sync, symbol, base, needed, range_h, endTime,
         )
@@ -188,7 +191,7 @@ async def get_klines(
             base = "1m"
             mult = max(target_sec // 60, 1)
             needed = limit * mult + mult
-            range_h = min(max(needed // 60 + 1, 1), 168)  # 7 days max for 1m
+            range_h = min(max(needed // 60 + 1, 1), 2160)  # cap at 90 days for 1m fallback
             influx_candles = await asyncio.to_thread(
                 _query_influx_sync, symbol, "1m", needed, range_h, endTime,
             )
@@ -199,7 +202,12 @@ async def get_klines(
                 candles.append(c)
         candles.sort(key=lambda x: x["openTime"])
 
-    if base != interval and candles:
+    # Always aggregate for intervals above 1-minute resolution.
+    # KeyDB only stores candle:1m data, so even when base=="1h" the raw candles
+    # coming from KeyDB are at 1-minute granularity and MUST be resampled.
+    # For the InfluxDB path where base=="1h" data exists, _aggregate is a no-op
+    # because 1h-aligned openTime values map to themselves under // 3600000.
+    if interval not in ("1s", "1m") and candles:
         candles = _aggregate(candles, target_sec * 1000)
 
     # When endTime is provided (scroll loading), skip live ticker merge
