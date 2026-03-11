@@ -144,20 +144,23 @@ async def get_klines(
 
     candles = []
 
-    # For endTime (scroll-left) queries, skip KeyDB and go directly to InfluxDB
-    # because KeyDB only keeps recent data (1s: 8h, 1m: 7d).
-    if not endTime:
-        # PRIORITY 1: Try KeyDB first for real-time data (0.5s latency)
-        # Try the resolution that matches the requested interval first
+    # PRIORITY 1: KeyDB path (real-time data)
+    # For 1s scroll-left: also use KeyDB (candle:1s has 8h TTL — no cross-session
+    # stale data from InfluxDB that would create confusing time jumps).
+    if not endTime or interval == "1s":
         if interval == "1s":
-            key_order = (f"candle:1s:{symbol}", f"candle:1m:{symbol}")
+            # For 1s: query a specific time range when endTime is given
+            score_min = (endTime - needed * 1000) if endTime else "-inf"
+            score_max = (endTime - 1) if endTime else "+inf"
+            raw = await r.zrangebyscore(f"candle:1s:{symbol}", score_min, score_max)
         else:
+            # For 1m+: try candle:1m first, fall back to candle:1s
             key_order = (f"candle:1m:{symbol}", f"candle:1s:{symbol}")
-        raw = None
-        for keydb_key in key_order:
-            raw = await r.zrangebyscore(keydb_key, "-inf", "+inf")
-            if raw:
-                break
+            raw = None
+            for keydb_key in key_order:
+                raw = await r.zrangebyscore(keydb_key, "-inf", "+inf")
+                if raw:
+                    break
         # Deduplicate by timestamp — keep the entry with the highest volume
         # (most complete aggregation) for each timestamp
         best_by_time: dict[int, dict] = {}
@@ -176,12 +179,13 @@ async def get_klines(
         candles.sort(key=lambda x: x["openTime"])
 
     # PRIORITY 2: Query InfluxDB for historical data
-    # For endTime (scroll-left) queries, always go to InfluxDB.
+    # For endTime (scroll-left) queries on 1m+ intervals, always go to InfluxDB.
     # For regular queries, supplement KeyDB if it doesn't have enough raw 1m
     # candles to produce `limit` target-interval candles after aggregation.
     # KeyDB always stores 1m data, so we need limit*(target_sec//60) raw candles.
+    # For 1s interval: never query InfluxDB to avoid cross-session stale data gaps.
     raw_needed = limit * max(target_sec // 60, 1)
-    if endTime or len(candles) < raw_needed:
+    if interval != "1s" and (endTime or len(candles) < raw_needed):
         influx_candles = await asyncio.to_thread(
             _query_influx_sync, symbol, base, needed, range_h, endTime,
         )

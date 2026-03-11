@@ -416,9 +416,6 @@ class KlineWindowAggregator(KeyedProcessFunction):
         self._symbol = runtime_context.get_state(
             ValueStateDescriptor("symbol", Types.STRING())
         )
-        self._timer_ts = runtime_context.get_state(
-            ValueStateDescriptor("timer_ts", Types.LONG())
-        )
 
     # ── process each 1s candle ────────────────────────────────────────────
 
@@ -468,26 +465,16 @@ class KlineWindowAggregator(KeyedProcessFunction):
     # ── safety timer ──────────────────────────────────────────────────────
 
     def on_timer(self, timestamp: int, ctx: 'KeyedProcessFunction.OnTimerContext'):
-        # Ignore stale timers that don't match the current registered timer
-        saved_ts = self._timer_ts.value()
-        if saved_ts is not None and saved_ts != timestamp:
-            return
         current_window = self._window_start.value()
         if current_window is not None:
             result = self._aggregate(current_window)
             if result:
                 yield result
             self._window_start.clear()
-            self._timer_ts.clear()
 
     def _register_safety_timer(self, ctx):
-        # Cancel the previous safety timer to prevent cascading partial emissions
-        old_ts = self._timer_ts.value()
-        if old_ts is not None:
-            ctx.timer_service().delete_processing_time_timer(old_ts)
         fire_at = ctx.timer_service().current_processing_time() + 65_000
         ctx.timer_service().register_processing_time_timer(fire_at)
-        self._timer_ts.update(fire_at)
 
     # ── aggregation with gap-fill ─────────────────────────────────────────
 
