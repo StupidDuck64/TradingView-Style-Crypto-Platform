@@ -127,7 +127,7 @@ class KeyDBWriter(FlatMapFunction):
 
 
 class InfluxDBWriter(FlatMapFunction):
-    def __init__(self, batch_size: int = 1000, flush_interval_sec: float = 2.0):
+    def __init__(self, batch_size: int = 200, flush_interval_sec: float = 0.5):
         self.batch_size = batch_size
         self.flush_interval_sec = flush_interval_sec
 
@@ -186,7 +186,7 @@ class InfluxDBWriter(FlatMapFunction):
 
 class KeyDBKlineWriter(FlatMapFunction):
     """Writes kline candles to KeyDB with interval-specific TTL:
-    - candle:1s:{symbol} → TTL 2 hours (for 1-second candles)
+    - candle:1s:{symbol} → TTL 8 hours (for 1-second candles)
     - candle:1m:{symbol} → TTL 7 days (for 1-minute candles)
     - candle:latest:{symbol} → latest candle info (only for 1m+, not 1s)
 
@@ -194,7 +194,7 @@ class KeyDBKlineWriter(FlatMapFunction):
     pipeline every BATCH_SIZE records or FLUSH_INTERVAL seconds.
     """
 
-    TTL_1S = 7_200        # 2 hours for 1-second candles
+    TTL_1S = 28_800       # 8 hours for 1-second candles
     TTL_1M = 604_800      # 7 days for 1-minute candles
     CLEANUP_EVERY = 60    # run ZREMRANGEBYSCORE once every 60 writes / symbol
     BATCH_SIZE = 50       # flush every N records
@@ -230,7 +230,8 @@ class KeyDBKlineWriter(FlatMapFunction):
                 history_key = item["history_key"]
                 ttl_sec = item["ttl_sec"]
 
-                # Add to interval-specific sorted set
+                # Remove any previous entry at this timestamp, then add the latest
+                pipe.zremrangebyscore(history_key, kline_start, kline_start)
                 pipe.zadd(history_key, {candle_json: kline_start})
 
                 # Only update candle:latest for 1m+ (not raw 1s — we use ticker:latest)
