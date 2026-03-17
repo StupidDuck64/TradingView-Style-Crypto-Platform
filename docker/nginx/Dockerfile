@@ -27,6 +27,16 @@ COPY docker/nginx/nginx.conf /etc/nginx/conf.d/default.conf
 # Copy built React app from Stage 1
 COPY --from=build /app/build /usr/share/nginx/html
 
-EXPOSE 80
+# Create ACME challenge directory
+RUN mkdir -p /var/www/certbot
+
+# Copy entrypoint that templates the domain into nginx config
+COPY docker/nginx/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 80 443
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]
 
 CMD ["nginx", "-g", "daemon off;"]

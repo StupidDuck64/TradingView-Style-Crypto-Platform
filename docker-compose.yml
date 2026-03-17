@@ -21,6 +21,8 @@ volumes:
   spark-events:
   trino-data:
   dagster-home:
+  letsencrypt:
+  certbot-webroot:
 
 services:
   # ══════════════════════════════════════════════════════════════════════════════
@@ -494,6 +496,12 @@ services:
     hostname: nginx
     ports:
       - "80:80"
+      - "443:443"
+    environment:
+      - CERTBOT_DOMAIN=${CERTBOT_DOMAIN:-localhost}
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot-webroot:/var/www/certbot
     restart: unless-stopped
     networks:
       - crypto-net
