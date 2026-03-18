@@ -43,8 +43,8 @@ INFLUX_ORG = os.environ.get("INFLUX_ORG", "vi")
 INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "crypto")
 
 # Retention constants
-TTL_1S_MS = 7_200_000  # 2 hours in milliseconds
-TTL_1M_MS = 604_800_000  # 7 days in milliseconds
+TTL_1S_MS = 604_800_000   # 7 days in milliseconds
+TTL_1M_MS = 7_776_000_000  # 90 days in milliseconds
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -169,7 +169,7 @@ class CandleQueryHelper:
             oldest_allowed = now_ms - TTL_1S_MS
             if start_ms and start_ms < oldest_allowed:
                 raise ValueError(
-                    f"1s candles only available for last 2 hours. "
+                    f"1s candles only available for last 7 days. "
                     f"Requested start: {datetime.fromtimestamp(start_ms/1000)}, "
                     f"Oldest available: {datetime.fromtimestamp(oldest_allowed/1000)}"
                 )

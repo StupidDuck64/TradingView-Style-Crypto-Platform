@@ -6,8 +6,8 @@ Unified backfill, populate & historical import script.
 Gộp chức năng của backfill_influx.py + ingest_historical_iceberg.py + initial_populate_influx.py.
 
 Mode:
-  --mode influx       : Detect + fill InfluxDB gaps (tắt máy → mất data)
-  --mode iceberg      : Pull historical 1h klines from Binance → Iceberg
+    --mode influx       : Detect + fill InfluxDB gaps (tắt máy → mất data)
+    --mode iceberg      : Pull historical 1m klines from Binance → Iceberg
   --mode populate     : Force populate N ngày 1m candles cho tất cả symbols (lần đầu khởi động)
   --mode all          : Chạy influx + iceberg (không bao gồm populate)
 
@@ -69,11 +69,14 @@ MINIO_BUCKET     = "cryptoprice"
 
 ICEBERG_CATALOG  = "iceberg_catalog"
 ICEBERG_DB       = "crypto_lakehouse"
-ICEBERG_TABLE    = "historical_hourly"
+ICEBERG_TABLE    = "coin_klines"
 FULL_TABLE_NAME  = f"{ICEBERG_CATALOG}.{ICEBERG_DB}.{ICEBERG_TABLE}"
 
 KLINES_PER_REQ   = 1000
 FLUSH_THRESHOLD  = 10_000
+BACKFILL_SPARK_CORES_MAX = os.environ.get("BACKFILL_SPARK_CORES_MAX", "2")
+BACKFILL_SPARK_SHUFFLE_PARTITIONS = os.environ.get("BACKFILL_SPARK_SHUFFLE_PARTITIONS", "8")
+BACKFILL_FLUSH_THRESHOLD = int(os.environ.get("BACKFILL_FLUSH_THRESHOLD", str(FLUSH_THRESHOLD)))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,6 +167,39 @@ def fetch_klines(
         time.sleep(REQUEST_DELAY)
 
     return all_klines
+
+
+def fetch_first_available_1m_start(symbol: str) -> int:
+    """Return the earliest available 1m candle open time for a symbol on Binance.
+
+    If detection fails, fall back to global Binance epoch.
+    """
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = requests.get(
+                BINANCE_KLINES_URL,
+                params={
+                    "symbol": symbol,
+                    "interval": "1m",
+                    "startTime": BINANCE_EPOCH_MS,
+                    "limit": 1,
+                },
+                timeout=15,
+            )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                log.warning("[%s] Rate limited while probing first candle. Sleeping %ds.", symbol, retry_after)
+                time.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            rows = resp.json()
+            if rows:
+                return int(rows[0][0])
+            return BINANCE_EPOCH_MS
+        except Exception as e:
+            log.warning("[%s] first-candle probe attempt %d failed: %s", symbol, attempt + 1, e)
+            time.sleep(2 ** attempt)
+    return BINANCE_EPOCH_MS
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -512,35 +548,34 @@ def build_spark():
         .config("spark.hadoop.fs.s3a.aws.credentials.provider",
                 "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
         .config("spark.sql.defaultCatalog", "iceberg_catalog")
-        .config("spark.sql.shuffle.partitions", "8")
-        .config("spark.cores.max", "2")
+        .config("spark.sql.shuffle.partitions", BACKFILL_SPARK_SHUFFLE_PARTITIONS)
+        .config("spark.cores.max", BACKFILL_SPARK_CORES_MAX)
         .getOrCreate()
     )
 
 
 def ensure_iceberg_table(spark):
-    from pyspark.sql.types import (
-        DoubleType, LongType, StringType, StructField, StructType, TimestampType,
-    )
-
     spark.sql(f"CREATE DATABASE IF NOT EXISTS {ICEBERG_CATALOG}.{ICEBERG_DB}")
     spark.sql(f"""
         CREATE TABLE IF NOT EXISTS {FULL_TABLE_NAME} (
-            open_time               BIGINT,
-            symbol                  STRING,
-            open                    DOUBLE,
-            high                    DOUBLE,
-            low                     DOUBLE,
-            close                   DOUBLE,
-            volume                  DOUBLE,
-            quote_volume            DOUBLE,
-            trade_count             BIGINT,
-            taker_buy_volume        DOUBLE,
-            taker_buy_quote_volume  DOUBLE,
-            event_time              TIMESTAMP
+            event_time      BIGINT,
+            symbol          STRING,
+            kline_start     BIGINT,
+            kline_close     BIGINT,
+            interval        STRING,
+            open            DOUBLE,
+            high            DOUBLE,
+            low             DOUBLE,
+            close           DOUBLE,
+            volume          DOUBLE,
+            quote_volume    DOUBLE,
+            trade_count     BIGINT,
+            is_closed       BOOLEAN,
+            kline_timestamp TIMESTAMP,
+            ingested_at     TIMESTAMP
         )
         USING iceberg
-        PARTITIONED BY (symbol, years(event_time))
+        PARTITIONED BY (days(kline_timestamp))
         TBLPROPERTIES (
             'write.format.default'            = 'parquet',
             'write.parquet.compression-codec'  = 'zstd',
@@ -554,12 +589,13 @@ def ensure_iceberg_table(spark):
 def get_last_open_time(spark, symbol: str) -> int:
     try:
         row = spark.sql(f"""
-            SELECT MAX(open_time) AS max_ts
+            SELECT MAX(kline_start) AS max_ts
             FROM {FULL_TABLE_NAME}
             WHERE symbol = '{symbol}'
+              AND interval = '1m'
         """).first()
         if row and row["max_ts"]:
-            return int(row["max_ts"]) + 3_600_000
+            return int(row["max_ts"]) + 60_000
     except Exception:
         pass
     return BINANCE_EPOCH_MS
@@ -567,7 +603,7 @@ def get_last_open_time(spark, symbol: str) -> int:
 
 def process_and_write_chunk(spark, rows: list, symbol: str, chunk_start_ms: int) -> int:
     from pyspark.sql.types import (
-        DoubleType, LongType, StringType, StructField, StructType, TimestampType,
+        BooleanType, DoubleType, LongType, StringType, StructField, StructType, TimestampType,
     )
     from pyspark.sql import functions as F
 
@@ -575,24 +611,28 @@ def process_and_write_chunk(spark, rows: list, symbol: str, chunk_start_ms: int)
         return 0
 
     kline_schema = StructType([
-        StructField("open_time",              LongType(),   False),
-        StructField("symbol",                 StringType(), False),
-        StructField("open",                   DoubleType(), True),
-        StructField("high",                   DoubleType(), True),
-        StructField("low",                    DoubleType(), True),
-        StructField("close",                  DoubleType(), True),
-        StructField("volume",                 DoubleType(), True),
-        StructField("quote_volume",           DoubleType(), True),
-        StructField("trade_count",            LongType(),   True),
-        StructField("taker_buy_volume",       DoubleType(), True),
-        StructField("taker_buy_quote_volume", DoubleType(), True),
+        StructField("event_time",      LongType(),   False),
+        StructField("symbol",          StringType(), False),
+        StructField("kline_start",     LongType(),   False),
+        StructField("kline_close",     LongType(),   False),
+        StructField("interval",        StringType(), False),
+        StructField("open",            DoubleType(), True),
+        StructField("high",            DoubleType(), True),
+        StructField("low",             DoubleType(), True),
+        StructField("close",           DoubleType(), True),
+        StructField("volume",          DoubleType(), True),
+        StructField("quote_volume",    DoubleType(), True),
+        StructField("trade_count",     LongType(),   True),
+        StructField("is_closed",       BooleanType(), False),
     ])
 
+    df = spark.createDataFrame(rows, schema=kline_schema)
     df = (
-        spark.createDataFrame(rows, schema=kline_schema)
-        .withColumn("event_time", (F.col("open_time") / 1000).cast(TimestampType()))
+        df
+        .withColumn("kline_timestamp", (F.col("kline_start") / 1000).cast(TimestampType()))
+        .withColumn("ingested_at", F.current_timestamp())
     )
-    df = df.sortWithinPartitions("symbol", "event_time")
+    df = df.sortWithinPartitions("symbol", "kline_start")
     df.writeTo(FULL_TABLE_NAME).append()
 
     log.info("[%s] Wrote %d candles (chunk start=%s).", symbol, len(rows),
@@ -601,21 +641,56 @@ def process_and_write_chunk(spark, rows: list, symbol: str, chunk_start_ms: int)
 
 
 def write_symbol_iceberg(spark, symbol: str, start_ms: int, end_ms: int) -> int:
-    """Pull klines from Binance and write to Iceberg table. Returns total candles written."""
+    """Pull 1m klines page-by-page and write to Iceberg incrementally.
+
+    This avoids loading a full multi-year history into memory, which improves
+    reliability for full backfill (all available 1m candles).
+    """
     total_written  = 0
     current_ms     = start_ms
     chunk_start_ms = start_ms
     chunk_buffer: list = []
 
     while current_ms < end_ms:
-        klines = fetch_klines(symbol, current_ms, end_ms, interval="1h", batch_limit=KLINES_PER_REQ)
+        klines = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = requests.get(
+                    BINANCE_KLINES_URL,
+                    params={
+                        "symbol": symbol,
+                        "interval": "1m",
+                        "startTime": current_ms,
+                        "endTime": end_ms,
+                        "limit": KLINES_PER_REQ,
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("Retry-After", 60))
+                    log.warning("[%s] Rate limited. Sleeping %ds.", symbol, retry_after)
+                    time.sleep(retry_after)
+                    continue
+                resp.raise_for_status()
+                klines = resp.json()
+                break
+            except Exception as e:
+                log.warning("[%s] page fetch attempt %d failed at %d: %s", symbol, attempt + 1, current_ms, e)
+                time.sleep(2 ** attempt)
+
+        if klines is None:
+            raise RuntimeError(f"[{symbol}] failed to fetch klines at start={current_ms}")
         if not klines:
             break
 
         for k in klines:
+            open_ms = int(k[0])
             chunk_buffer.append([
-                int(k[0]),
+                open_ms,
                 symbol,
+                open_ms,
+                int(k[6]),
+                "1m",
                 float(k[1]),
                 float(k[2]),
                 float(k[3]),
@@ -623,16 +698,18 @@ def write_symbol_iceberg(spark, symbol: str, start_ms: int, end_ms: int) -> int:
                 float(k[5]),
                 float(k[7]),
                 int(k[8]),
-                float(k[9]),
-                float(k[10]),
+                True,
             ])
 
-        if len(chunk_buffer) >= FLUSH_THRESHOLD:
+        if len(chunk_buffer) >= BACKFILL_FLUSH_THRESHOLD:
             total_written += process_and_write_chunk(spark, chunk_buffer, symbol, chunk_start_ms)
             chunk_buffer.clear()
-            chunk_start_ms = int(klines[-1][0]) + 3_600_000
+            chunk_start_ms = int(klines[-1][0]) + 60_000
 
-        current_ms = int(klines[-1][0]) + 3_600_000
+        next_ms = int(klines[-1][0]) + 60_000
+        if next_ms <= current_ms:
+            break
+        current_ms = next_ms
         time.sleep(REQUEST_DELAY)
 
     if chunk_buffer:
@@ -648,7 +725,7 @@ def run_iceberg_historical(iceberg_mode: str = "incremental", symbols_list: list
     log.info("=== Iceberg Historical Import (mode=%s) ===", iceberg_mode)
 
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    end_ms = now_ms - (now_ms % 3_600_000)
+    end_ms = now_ms - (now_ms % 60_000)
 
     symbols = symbols_list or fetch_usdt_symbols()
     log.info("Symbols: %d | End: %s", len(symbols),
@@ -664,7 +741,7 @@ def run_iceberg_historical(iceberg_mode: str = "incremental", symbols_list: list
     for idx, symbol in enumerate(symbols, 1):
         log.info("[%d/%d] Processing %s ...", idx, total_syms, symbol)
         if iceberg_mode == "backfill":
-            start_ms = BINANCE_EPOCH_MS
+            start_ms = fetch_first_available_1m_start(symbol)
         else:
             start_ms = get_last_open_time(spark, symbol)
 
@@ -686,9 +763,10 @@ def run_iceberg_historical(iceberg_mode: str = "incremental", symbols_list: list
             SELECT
                 COUNT(*)                AS total_rows,
                 COUNT(DISTINCT symbol)  AS total_symbols,
-                MIN(event_time)         AS earliest,
-                MAX(event_time)         AS latest
+                MIN(kline_timestamp)    AS earliest,
+                MAX(kline_timestamp)    AS latest
             FROM {FULL_TABLE_NAME}
+            WHERE interval = '1m'
         """)
         size_df.show(truncate=False)
         files_df = spark.sql(f"SELECT SUM(file_size_in_bytes) AS bytes FROM {FULL_TABLE_NAME}.files")

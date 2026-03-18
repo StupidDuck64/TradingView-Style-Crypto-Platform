@@ -303,10 +303,12 @@ query_trades = (
 klines_df = (
     read_kafka("crypto_klines", KLINES_AVRO_SCHEMA)
     .filter(col("kline_start").isNotNull())
+    .filter(col("interval") == "1m")
+    .filter(col("is_closed") == True)
     .withColumn("kline_timestamp", (col("kline_start") / 1000).cast("timestamp"))
     .withColumn("ingested_at", current_timestamp())
     .withWatermark("kline_timestamp", "2 minutes")
-    .dropDuplicates(["symbol", "kline_start", "interval"])
+    .dropDuplicates(["symbol", "kline_start"])
 )
 
 query_klines = (

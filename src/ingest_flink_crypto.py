@@ -25,6 +25,10 @@ INFLUX_TOKEN  = os.environ.get("INFLUX_TOKEN",  "")
 INFLUX_ORG    = os.environ.get("INFLUX_ORG",    "vi")
 INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "crypto")
 
+KEYDB_1S_RETENTION_DAYS = int(os.environ.get("KEYDB_1S_RETENTION_DAYS", "7"))
+KEYDB_1M_RETENTION_DAYS = int(os.environ.get("KEYDB_1M_RETENTION_DAYS", "7"))
+FLINK_PARALLELISM = int(os.environ.get("FLINK_PARALLELISM", "1"))
+
 SCHEMA_REGISTRY_URL = os.environ.get(
     "SCHEMA_REGISTRY_URL",
     "http://schema-registry:8080/apis/ccompat/v7",
@@ -45,6 +49,7 @@ class KeyDBWriter(FlatMapFunction):
     BATCH_SIZE = 100
     FLUSH_INTERVAL = 0.5
     CLEANUP_EVERY = 60
+    TICKER_HISTORY_TTL_SEC = 600
 
     def open(self, runtime_context):
         self._r = redis.Redis(
@@ -85,6 +90,8 @@ class KeyDBWriter(FlatMapFunction):
                     },
                 )
                 pipe.zadd(f"ticker:history:{symbol}", {f"{price}:{volume}": event_time})
+                # Ensure inactive symbol histories are eventually reclaimed.
+                pipe.expire(f"ticker:history:{symbol}", self.TICKER_HISTORY_TTL_SEC)
 
                 count = self._write_count.get(symbol, 0) + 1
                 self._write_count[symbol] = count
@@ -194,8 +201,8 @@ class KeyDBKlineWriter(FlatMapFunction):
     pipeline every BATCH_SIZE records or FLUSH_INTERVAL seconds.
     """
 
-    TTL_1S = 28_800       # 8 hours for 1-second candles
-    TTL_1M = 604_800      # 7 days for 1-minute candles
+    TTL_1S = max(KEYDB_1S_RETENTION_DAYS, 1) * 86_400
+    TTL_1M = max(KEYDB_1M_RETENTION_DAYS, 1) * 86_400
     CLEANUP_EVERY = 60    # run ZREMRANGEBYSCORE once every 60 writes / symbol
     BATCH_SIZE = 50       # flush every N records
     FLUSH_INTERVAL = 0.5  # flush every N seconds
@@ -233,6 +240,8 @@ class KeyDBKlineWriter(FlatMapFunction):
                 # Remove any previous entry at this timestamp, then add the latest
                 pipe.zremrangebyscore(history_key, kline_start, kline_start)
                 pipe.zadd(history_key, {candle_json: kline_start})
+                # Always refresh TTL so inactive symbols do not leak memory.
+                pipe.expire(history_key, ttl_sec)
 
                 # Only update candle:latest for 1m+ (not raw 1s — we use ticker:latest)
                 if interval != "1s":
@@ -244,7 +253,6 @@ class KeyDBKlineWriter(FlatMapFunction):
                 if count % self.CLEANUP_EVERY == 0:
                     cutoff = kline_start - (ttl_sec * 1000)
                     pipe.zremrangebyscore(history_key, 0, cutoff)
-                    pipe.expire(history_key, ttl_sec)
 
             pipe.execute()
         except Exception as e:
@@ -262,6 +270,10 @@ class KeyDBKlineWriter(FlatMapFunction):
             if not symbol:
                 return []
             interval    = value.get("interval", "1m")
+            if interval not in ("1s", "1m"):
+                # Keep KeyDB caches canonical: 1s in candle:1s and 1m in candle:1m.
+                # Higher intervals are derived on read from 1m and must not pollute base sets.
+                return []
             kline_start = int(value["kline_start"])
             
             candle_json = json.dumps({
@@ -280,7 +292,7 @@ class KeyDBKlineWriter(FlatMapFunction):
             if interval == "1s":
                 history_key = f"candle:1s:{symbol}"
                 ttl_sec = self.TTL_1S
-            else:  # 1m or other intervals
+            else:  # 1m
                 history_key = f"candle:1m:{symbol}"
                 ttl_sec = self.TTL_1M
 
@@ -351,6 +363,11 @@ class InfluxDBKlineWriter(FlatMapFunction):
         try:
             if isinstance(value, (str, bytes)):
                 value = json.loads(value)
+
+            # InfluxDB stores only closed 1m candles for 90-day analytics/history.
+            if value.get("interval") != "1m" or not bool(value.get("is_closed", False)):
+                return []
+
             point = (
                 Point("candles")
                 .tag("symbol",   value["symbol"])
@@ -722,7 +739,8 @@ class DepthWriter(FlatMapFunction):
                     "best_ask":       float(asks[0][0]) if asks else 0,
                     "spread":         round(float(asks[0][0]) - float(bids[0][0]), 8) if bids and asks else 0,
                 })
-                pipe.expire(f"orderbook:{symbol}", 60)
+                # Keep snapshots available during short producer/network drops.
+                pipe.expire(f"orderbook:{symbol}", 300)
             pipe.execute()
         except Exception as e:
             log.error("[Depth] flush error (dropped %d records): %s",
@@ -761,6 +779,7 @@ class DepthWriter(FlatMapFunction):
 def run():
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_state_backend(HashMapStateBackend())
+    env.set_parallelism(FLINK_PARALLELISM)
 
     s3_config = Configuration()
     s3_config.set_string("s3.endpoint",          MINIO_ENDPOINT)
@@ -836,8 +855,8 @@ def run():
         })
 
     ds_dict = ds_row.map(row_to_dict, output_type=Types.STRING())
-    ds_dict.flat_map(KeyDBWriter(),    output_type=Types.STRING()).name("Write_To_KeyDB").print()
-    ds_dict.flat_map(InfluxDBWriter(), output_type=Types.STRING()).name("Write_To_InfluxDB").print()
+    ds_dict.flat_map(KeyDBWriter(), output_type=Types.STRING()).name("Write_To_KeyDB")
+    ds_dict.flat_map(InfluxDBWriter(), output_type=Types.STRING()).name("Write_To_InfluxDB")
 
     # ── Kline (candle) pipeline: crypto_klines → InfluxDB candles ──────────────
     t_env.execute_sql(f"""
@@ -907,10 +926,10 @@ def run():
     # ── Branch 1: write raw 1s candles to KeyDB + InfluxDB ─────────────────
     ds_kline_dict.flat_map(
         KeyDBKlineWriter(), output_type=Types.STRING()
-    ).name("Write_1s_Klines_To_KeyDB").print()
+    ).name("Write_1s_Klines_To_KeyDB")
     ds_kline_dict.flat_map(
         InfluxDBKlineWriter(), output_type=Types.STRING()
-    ).name("Write_1s_Klines_To_InfluxDB").print()
+    ).name("Write_1s_Klines_To_InfluxDB")
 
     # ── Branch 2: in-flight 1s→1m aggregation (dedup + gap-fill) ──────────
     ds_1m_candles = (
@@ -920,15 +939,15 @@ def run():
     )
     ds_1m_candles.flat_map(
         KeyDBKlineWriter(), output_type=Types.STRING()
-    ).name("Write_1m_Klines_To_KeyDB").print()
+    ).name("Write_1m_Klines_To_KeyDB")
     ds_1m_candles.flat_map(
         InfluxDBKlineWriter(), output_type=Types.STRING()
-    ).name("Write_1m_Klines_To_InfluxDB").print()
+    ).name("Write_1m_Klines_To_InfluxDB")
 
     # ── Indicators pipeline: closed 1m klines → SMA/EMA → KeyDB + InfluxDB
     ds_1m_candles.flat_map(
         IndicatorWriter(), output_type=Types.STRING()
-    ).name("Write_Indicators").print()
+    ).name("Write_Indicators")
 
     # ── Order-book depth pipeline: crypto_depth → KeyDB ────────────────────────
     t_env.execute_sql(f"""
@@ -967,7 +986,7 @@ def run():
     ds_depth_dict = ds_depth_row.map(depth_row_to_dict, output_type=Types.STRING())
     ds_depth_dict.flat_map(
         DepthWriter(), output_type=Types.STRING()
-    ).name("Write_Depth_To_KeyDB").print()
+    ).name("Write_Depth_To_KeyDB")
 
     env.execute("Crypto_MultiStream_Kafka_to_KeyDB_InfluxDB")
 

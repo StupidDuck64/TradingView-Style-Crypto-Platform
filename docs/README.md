@@ -12,7 +12,7 @@ Dự án streaming giá crypto real-time từ Binance WebSocket, xử lý bằng
 
 ## Kiến trúc
 
-![Tech Stack](image.png)
+![Tech Stack](crypto.png)
 
 ```
 Dagster (scheduled):
@@ -277,8 +277,8 @@ Multi-stage Dockerfile: build React app (Node 20) → copy vào nginx:1.25-alpin
 | influxdb          | influxdb:2.7               |       1.5 GB |       ~110 MB |     0.5 | Time-series, org=vi, bucket=crypto                   |
 | postgres          | postgres:16-alpine         |     512.0 MB |        ~22 MB |     0.1 | Iceberg catalog + Dagster metadata                   |
 | keydb             | eqalpha/keydb:latest       |       1.0 GB |        ~26 MB |     0.2 | maxmemory 1GB, LRU eviction, hz 50                   |
-| flink-jobmanager  | cryptoprice/flink:1.18.1   |       1.6 GB |       ~448 MB |     0.5 | `jobmanager.memory.process.size: 1600m` (cap 1.75G)  |
-| flink-taskmanager | cryptoprice/flink:1.18.1   |       4.1 GB |       ~2.2 GB |     3.0 | `process.size: 4096m`, 4 slots, parallelism=3        |
+| flink-jobmanager  | cryptoprice/flink:1.18.1   |       2.3 GB |       ~448 MB |     0.5 | `jobmanager.memory.process.size: 2304m` (cap 2.5G)   |
+| flink-taskmanager | cryptoprice/flink:1.18.1   |       6.0 GB |       ~2.2 GB |     3.0 | `process.size: 6144m`, 2 slots, parallelism=1        |
 | spark-master      | apache/spark:3.5.5         |       1.0 GB |       ~764 MB |     0.3 | Chỉ schedule + driver                                |
 | spark-worker      | apache/spark:3.5.5         |       4.0 GB |       ~244 MB |     0.1 | `SPARK_WORKER_MEMORY=4G`, cores.max=2                |
 | trino             | trinodb/trino:442          |       1.0 GB |       ~1.1 GB |     0.5 | JVM `-Xmx1G`, query Iceberg (hiếm dùng)             |

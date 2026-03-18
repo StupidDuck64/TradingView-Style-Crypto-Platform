@@ -217,10 +217,12 @@ services:
     ports:
       - "8081:8081" # Flink Web UI
     command: jobmanager
+    mem_limit: 2560m
+    mem_reservation: 2048m
     deploy:
       resources:
         limits:
-          memory: 1792m
+          memory: 2560m
     environment:
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
       KAFKA_BOOTSTRAP: kafka:9092
@@ -228,8 +230,12 @@ services:
       INFLUX_TOKEN: ${INFLUX_TOKEN}
       INFLUX_ORG: ${INFLUX_ORG}
       INFLUX_BUCKET: ${INFLUX_BUCKET}
+      INFLUX_1M_RETENTION_DAYS: 90
+      FLINK_PARALLELISM: 1
       REDIS_HOST: keydb
       REDIS_PORT: 6379
+      KEYDB_1S_RETENTION_DAYS: 7
+      KEYDB_1M_RETENTION_DAYS: 7
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -257,10 +263,12 @@ services:
     hostname: flink-taskmanager
     restart: unless-stopped
     command: taskmanager
+    mem_limit: 7168m
+    mem_reservation: 6144m
     deploy:
       resources:
         limits:
-          memory: 4608m
+          memory: 7168m
     environment:
       JOB_MANAGER_RPC_ADDRESS: flink-jobmanager
       KAFKA_BOOTSTRAP: kafka:9092
@@ -268,8 +276,12 @@ services:
       INFLUX_TOKEN: ${INFLUX_TOKEN}
       INFLUX_ORG: ${INFLUX_ORG}
       INFLUX_BUCKET: ${INFLUX_BUCKET}
+      INFLUX_1M_RETENTION_DAYS: 90
+      FLINK_PARALLELISM: 1
       REDIS_HOST: keydb
       REDIS_PORT: 6379
+      KEYDB_1S_RETENTION_DAYS: 7
+      KEYDB_1M_RETENTION_DAYS: 7
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -460,6 +472,7 @@ services:
       INFLUX_TOKEN: ${INFLUX_TOKEN}
       INFLUX_ORG: ${INFLUX_ORG}
       INFLUX_BUCKET: ${INFLUX_BUCKET}
+      INFLUX_1M_RETENTION_DAYS: 90
       CORS_ORIGINS: "*"
       TRINO_HOST: trino
       TRINO_PORT: 8080

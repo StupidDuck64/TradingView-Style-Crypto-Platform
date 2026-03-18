@@ -29,6 +29,10 @@ async def stream(websocket: WebSocket, symbol: str = "", interval: str = "1m"):
     await websocket.accept()
     r = await get_redis()
     symbol = symbol.upper()
+    interval = interval.strip().lower()
+    if interval not in INTERVAL_SECONDS:
+        await websocket.close(code=1008)
+        return
     target_sec = INTERVAL_SECONDS.get(interval, 60)
     target_ms = target_sec * 1000
     last_sent: dict | None = None
@@ -73,21 +77,8 @@ async def _build_candle(r, symbol: str, interval: str, target_ms: int) -> dict |
         else:
             candle = None
 
-        # If ticker is newer (different second), synthesise a 1s candle
-        if live_price and live_ts:
-            live_sec = (live_ts // 1000) * 1000  # align to second
-            if candle is None or live_sec > candle["openTime"]:
-                return {
-                    "openTime": live_sec,
-                    "open": live_price, "high": live_price,
-                    "low": live_price, "close": live_price,
-                    "volume": 0,
-                }
-            # Same second → enrich Flink candle with live price
-            if live_sec == candle["openTime"]:
-                candle["close"] = live_price
-                candle["high"] = max(candle["high"], live_price)
-                candle["low"] = min(candle["low"], live_price)
+        # Do not synthesize or overwrite 1s candles with ticker price.
+        # This keeps 1s OHLC as close as possible to exchange kline stream values.
         return candle
 
     # ── 1m and larger ────────────────────────────────────────────────
@@ -118,12 +109,18 @@ async def _build_candle(r, symbol: str, interval: str, target_ms: int) -> dict |
                 "volume": round(sum(c["v"] for c in candles), 8),
             }
 
-    # Merge with real-time ticker — only if ticker is NEWER than source data
+    # Keep 1m candles exchange-consistent: no ticker-based override.
+    if interval == "1m":
+        return flink_candle
+
+    # Merge with real-time ticker for 5m+ only if ticker is newer and still
+    # inside the currently open target window.
     if live_price and live_ts:
         live_window = (live_ts // target_ms) * target_ms
         if flink_candle and live_window == flink_window:
             # Same window — only update if ticker is fresher than source candles
-            if live_ts > latest_source_ts:
+            window_close_ms = flink_window + target_ms
+            if live_ts > latest_source_ts and int(time.time() * 1000) < window_close_ms:
                 flink_candle["close"] = live_price
                 flink_candle["high"] = max(flink_candle["high"], live_price)
                 flink_candle["low"] = min(flink_candle["low"], live_price)

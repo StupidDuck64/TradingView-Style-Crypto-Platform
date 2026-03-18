@@ -226,10 +226,12 @@ export async function fetchHistoricalCandles(
   startMs,
   endMs,
   limit = 500,
+  interval = "1h",
 ) {
   if (DATA_SOURCE === "api") {
     const params = new URLSearchParams({
       symbol,
+      interval,
       startTime: String(startMs),
       endTime: String(endMs),
       limit: String(limit),
@@ -252,7 +254,7 @@ export async function fetchHistoricalCandles(
   const count = Math.min(Math.floor((endMs - startMs) / hourMs), limit);
   return new Promise((resolve) => {
     setTimeout(
-      () => resolve(generateMockCandles(symbol, "1h", Math.max(count, 10))),
+      () => resolve(generateMockCandles(symbol, interval, Math.max(count, 10))),
       300,
     );
   });

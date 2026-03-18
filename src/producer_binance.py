@@ -21,7 +21,7 @@ BINANCE_REST_EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
 BINANCE_TICKER_WS_URL = "wss://stream.binance.com:9443/ws/!ticker@arr"
 BINANCE_COMBINED_WS_BASE = "wss://stream.binance.com:9443/stream"
 
-SYMBOLS_PER_CONNECTION = 50  # reduced from 200 to prevent ping/pong timeout
+SYMBOLS_PER_CONNECTION = int(os.environ.get("SYMBOLS_PER_CONNECTION", "25"))
 TICKER_HEARTBEAT_INTERVAL = 5.0
 
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP", "kafka:9092")
@@ -31,12 +31,12 @@ KAFKA_TOPIC_KLINES = "crypto_klines"
 KAFKA_TOPIC_DEPTH  = "crypto_depth"
 KLINE_INTERVAL_WS  = os.environ.get("KLINE_INTERVAL", "1m")
 DEPTH_LEVEL        = os.environ.get("DEPTH_LEVEL", "20")   # top 20 bids/asks
-DEPTH_UPDATE_MS    = os.environ.get("DEPTH_UPDATE_MS", "100")  # 100ms updates
+DEPTH_UPDATE_MS    = os.environ.get("DEPTH_UPDATE_MS", "100")  # 100ms is supported for partial book depth streams
 SCHEMA_REGISTRY_URL = os.environ.get(
     "SCHEMA_REGISTRY_URL", "http://schema-registry:8080/apis/ccompat/v7"
 )
-SYMBOLS_PER_DEPTH_CONN = 50  # reduced from 200 to prevent ping/pong timeout
-MAX_SYMBOLS        = 400      # cap to avoid exceeding Binance WS connection limits
+SYMBOLS_PER_DEPTH_CONN = int(os.environ.get("SYMBOLS_PER_DEPTH_CONN", "15"))
+MAX_SYMBOLS        = int(os.environ.get("MAX_SYMBOLS", "200"))
 
 producer: KafkaProducer | None = None
 producer_lock = threading.Lock()
@@ -435,10 +435,10 @@ def map_depth(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
     return {
         "event_time":     int(raw.get("E", int(time.time() * 1000))),
-        "symbol":         str(raw.get("s", "")),
-        "last_update_id": int(raw.get("lastUpdateId", 0)),
-        "bids":           json.dumps([[float(p), float(q)] for p, q in raw.get("bids", [])]),
-        "asks":           json.dumps([[float(p), float(q)] for p, q in raw.get("asks", [])]),
+        "symbol":         str(raw.get("s", "")).upper(),
+        "last_update_id": int(raw.get("lastUpdateId", raw.get("u", 0))),
+        "bids":           json.dumps([[float(p), float(q)] for p, q in (raw.get("bids") or raw.get("b") or [])]),
+        "asks":           json.dumps([[float(p), float(q)] for p, q in (raw.get("asks") or raw.get("a") or [])]),
     }
 
 
@@ -466,9 +466,11 @@ def handle_depth_message(message: str) -> None:
         symbol = stream_name.split("@")[0].upper() if stream_name else ""
         payload["s"] = symbol
 
-    symbol = payload.get("s", "")
+    symbol = str(payload.get("s", "")).upper()
     if not symbol.endswith("USDT"):
         return
+
+    payload["s"] = symbol
 
     send_to_kafka(KAFKA_TOPIC_DEPTH, map_depth(payload))
 

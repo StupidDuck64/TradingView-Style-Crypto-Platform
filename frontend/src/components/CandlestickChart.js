@@ -541,7 +541,7 @@ const CandlestickChart = ({
         .catch(() => {});
     };
 
-    const pollInterval = 1000;
+    const pollInterval = is1s ? 1500 : 3000;
     const pollId = setInterval(pollIncremental, pollInterval);
 
     return () => {
@@ -562,6 +562,7 @@ const CandlestickChart = ({
       historicalRange.startMs,
       historicalRange.endMs,
       2000,
+      timeframe.toLowerCase(),
     )
       .then((data) => {
         applyDataToChart(data);
@@ -572,7 +573,7 @@ const CandlestickChart = ({
         setFetchError("Failed to load historical data");
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, historicalRange, retryCount]);
+  }, [symbol, historicalRange, timeframe, retryCount]);
 
   // Re-layout chart when chart tab becomes visible again
   useEffect(() => {
@@ -678,6 +679,8 @@ const CandlestickChart = ({
     [timeframe],
   );
 
+  const historicalTimeframes = TIMEFRAMES.filter((tf) => tf !== "1s");
+
   return (
     <div className="flex flex-col h-full bg-gray-900 rounded-lg overflow-hidden">
       {/* Top bar */}
@@ -711,13 +714,9 @@ const CandlestickChart = ({
           )}
         </div>
         <div className="flex items-center gap-1">
-          {historicalRange ? (
-            <span className="text-xs text-amber-400 font-medium px-2">
-              1H (historical)
-            </span>
-          ) : (
-            TIMEFRAMES.map((tf) => <TFBtn key={tf} tf={tf} />)
-          )}
+          {(historicalRange ? historicalTimeframes : TIMEFRAMES).map((tf) => (
+            <TFBtn key={tf} tf={tf} />
+          ))}
         </div>
         <div className="flex items-center gap-2">
           {/* Export button */}
@@ -749,7 +748,10 @@ const CandlestickChart = ({
           {/* Historical date-range picker */}
           <DateRangePicker
             active={!!historicalRange}
-            onApply={(range) => setHistoricalRange(range)}
+            onApply={(range) => {
+              if (timeframe === "1s") setTimeframe("1m");
+              setHistoricalRange(range);
+            }}
             onClear={() => setHistoricalRange(null)}
           />
         </div>
@@ -761,7 +763,7 @@ const CandlestickChart = ({
           <span className="text-xs text-amber-300">
             Viewing historical data &mdash;{" "}
             {new Date(historicalRange.startMs).toLocaleString()} to{" "}
-            {new Date(historicalRange.endMs).toLocaleString()} (hourly candles)
+            {new Date(historicalRange.endMs).toLocaleString()} ({timeframe} candles)
           </span>
           <button
             onClick={() => setHistoricalRange(null)}
