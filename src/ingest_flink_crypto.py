@@ -25,7 +25,7 @@ INFLUX_TOKEN  = os.environ.get("INFLUX_TOKEN",  "")
 INFLUX_ORG    = os.environ.get("INFLUX_ORG",    "vi")
 INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "crypto")
 
-KEYDB_1S_RETENTION_DAYS = int(os.environ.get("KEYDB_1S_RETENTION_DAYS", "7"))
+KEYDB_1S_RETENTION_DAYS = int(os.environ.get("KEYDB_1S_RETENTION_DAYS", "1"))
 KEYDB_1M_RETENTION_DAYS = int(os.environ.get("KEYDB_1M_RETENTION_DAYS", "7"))
 FLINK_PARALLELISM = int(os.environ.get("FLINK_PARALLELISM", "1"))
 
@@ -193,7 +193,7 @@ class InfluxDBWriter(FlatMapFunction):
 
 class KeyDBKlineWriter(FlatMapFunction):
     """Writes kline candles to KeyDB with interval-specific TTL:
-    - candle:1s:{symbol} → TTL 8 hours (for 1-second candles)
+    - candle:1s:{symbol} → TTL KEYDB_1S_RETENTION_DAYS (default: 1 day)
     - candle:1m:{symbol} → TTL 7 days (for 1-minute candles)
     - candle:latest:{symbol} → latest candle info (only for 1m+, not 1s)
 

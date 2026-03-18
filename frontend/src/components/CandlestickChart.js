@@ -53,6 +53,8 @@ const CandlestickChart = ({
   const rsiSeriesRef = useRef(null);
   const mfiSeriesRef = useRef(null);
   const candlesRef = useRef([]);
+  const symbolRef = useRef(defaultSymbol);
+  const timeframeRef = useRef("1m");
 
   const [symbol, setSymbol] = useState(symbolProp || defaultSymbol);
   const [timeframe, setTimeframe] = useState("1m");
@@ -72,6 +74,13 @@ const CandlestickChart = ({
   const earliestTimestampRef = useRef(null);
   const noMoreDataRef = useRef(false);
   const scrollCooldownRef = useRef(0);
+
+  // Keep latest symbol/timeframe in refs so async scroll-load results can be
+  // ignored when the user changes context mid-request.
+  useEffect(() => {
+    symbolRef.current = symbol;
+    timeframeRef.current = timeframe.toLowerCase();
+  }, [symbol, timeframe]);
 
   const handleSymbolChange = useCallback(
     (s) => {
@@ -235,11 +244,22 @@ const CandlestickChart = ({
     if (current.length === 0) return;
 
     const earliestTime = current[0].time;
+    const requestSymbol = symbol;
+    const requestInterval = timeframe.toLowerCase();
     
     isLoadingMoreRef.current = true;
     try {
       const limit = 500;
-      const olderData = await fetchCandles(symbol, timeframe.toLowerCase(), limit, earliestTime);
+      const olderData = await fetchCandles(requestSymbol, requestInterval, limit, earliestTime);
+
+      // User changed symbol/timeframe while request was in flight.
+      if (
+        symbolRef.current !== requestSymbol
+        || timeframeRef.current !== requestInterval
+      ) {
+        isLoadingMoreRef.current = false;
+        return;
+      }
       
       if (olderData.length === 0) {
         noMoreDataRef.current = true;
@@ -324,10 +344,10 @@ const CandlestickChart = ({
       }
     };
     
-    const unsubscribe = timeScale.subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
+    timeScale.subscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
     
     return () => {
-      if (unsubscribe) unsubscribe();
+      timeScale.unsubscribeVisibleLogicalRangeChange(handleVisibleRangeChange);
     };
   }, [loadMoreHistoricalData, historicalRange]);
 

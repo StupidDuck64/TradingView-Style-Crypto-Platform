@@ -38,11 +38,6 @@ def _ms_to_rfc3339(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _base_interval(interval: str) -> str:
-    """Pick the finest stored interval to serve as aggregation base."""
-    return "1s" if interval == "1s" else "1m"
-
-
 def _aggregate(candles: list[dict], target_ms: int) -> list[dict]:
     """Re-sample OHLCV candles into larger-interval buckets."""
     if not candles:
@@ -285,40 +280,20 @@ async def get_klines(
         if cached:
             return json.loads(cached)
 
-    base = _base_interval(interval)
-    base_sec = INTERVAL_SECONDS[base]
-    mult = max(target_sec // base_sec, 1)
-    needed = min(limit * mult + mult, MAX_RAW_CANDLES)
-    range_h = min(max(needed * base_sec // 3600 + 1, 1), INFLUX_1M_RETENTION_DAYS * 24)
-    raw_needed = min((limit * max(target_sec // 60, 1)) + 2, MAX_RAW_CANDLES)
-
     candles = []
     now_ms = int(time.time() * 1000)
     influx_cutoff_ms = now_ms - (INFLUX_1M_RETENTION_DAYS * 24 * 3600 * 1000)
 
-    # PRIORITY 1: KeyDB path (real-time data)
-    # For 1s scroll-left: also use KeyDB (candle:1s has 8h TTL — no cross-session
-    # stale data from InfluxDB that would create confusing time jumps).
-    use_keydb_base = (
-        (not endTime and interval in ("1s", "1m", "5m", "15m"))
-        or (endTime is not None and interval == "1s")
-    )
-    if use_keydb_base and (not endTime or interval == "1s"):
-        if interval == "1s":
-            # For 1s: keep a wider live window to tolerate brief ingestion hiccups.
-            live_lookback_ms = max(needed * 1000, 120_000)
-            score_min = (endTime - needed * 1000) if endTime else str(now_ms - live_lookback_ms)
-            score_max = (endTime - 1) if endTime else "+inf"
-            raw = await r.zrangebyscore(f"candle:1s:{symbol}", score_min, score_max)
-            # Fallback for live mode when score-window lookup misses due timestamp drift.
-            if not raw and not endTime:
-                raw = await r.zrevrange(f"candle:1s:{symbol}", 0, needed - 1)
-        else:
-            score_max = (endTime - 1) if endTime else "+inf"
-            score_min = (endTime - raw_needed * 60_000) if endTime else str(now_ms - raw_needed * 60_000)
-            raw = await r.zrangebyscore(f"candle:1m:{symbol}", score_min, score_max)
-        # Deduplicate by timestamp — keep the entry with the highest volume
-        # (most complete aggregation) for each timestamp
+    # 1s candles are served exclusively from KeyDB (speed layer).
+    if interval == "1s":
+        needed_1s = min(limit + 2, MAX_RAW_CANDLES)
+        live_lookback_ms = max(needed_1s * 1000, 120_000)
+        score_min = (endTime - needed_1s * 1000) if endTime else str(now_ms - live_lookback_ms)
+        score_max = (endTime - 1) if endTime else "+inf"
+        raw = await r.zrangebyscore(f"candle:1s:{symbol}", score_min, score_max)
+        if not raw and not endTime:
+            raw = await r.zrevrange(f"candle:1s:{symbol}", 0, needed_1s - 1)
+
         best_by_time: dict[int, dict] = {}
         for item in raw if raw else []:
             c = json.loads(item)
@@ -333,17 +308,11 @@ async def get_klines(
                 "volume": c["v"],
             })
         candles.sort(key=lambda x: x["openTime"])
-
-    # PRIORITY 2: Query InfluxDB for historical data
-    # For endTime (scroll-left) queries on 1m+ intervals, always go to InfluxDB.
-    # For regular queries, supplement KeyDB if it doesn't have enough raw 1m
-    # candles to produce `limit` target-interval candles after aggregation.
-    # KeyDB always stores 1m data, so we need limit*(target_sec//60) raw candles.
-    # For 1s interval: never query InfluxDB to avoid cross-session stale data gaps.
-    if interval != "1s":
+    else:
+        # 1m+ candles are built from InfluxDB 1m base candles.
+        # For deep history (outside retention), fallback to Iceberg via Trino.
         is_scroll_request = endTime is not None
         if is_scroll_request:
-            # Deep historical path with bounded paging and Lakehouse fallback.
             backfilled = await asyncio.to_thread(
                 _collect_base_1m_candles,
                 symbol,
@@ -357,21 +326,18 @@ async def get_klines(
             )
             candles = _merge_unique(candles, backfilled)
         else:
-            # Lightweight live path: direct Influx read of only what is needed
-            # for current chart rendering (no paging, no Trino).
-            need_live_backfill = interval not in ("1m", "5m", "15m") or len(candles) < raw_needed
-            if need_live_backfill:
-                live_limit = min(max(raw_needed, limit), LIVE_MAX_BASE_ROWS)
-                live_range_h = min(max((live_limit * 60) // 3600 + 2, 1), INFLUX_1M_RETENTION_DAYS * 24)
-                live_rows = await asyncio.to_thread(
-                    _query_influx_sync,
-                    symbol,
-                    "1m",
-                    live_limit,
-                    live_range_h,
-                    None,
-                )
-                candles = _merge_unique(candles, live_rows)
+            raw_needed = min((limit * max(target_sec // 60, 1)) + 2, MAX_RAW_CANDLES)
+            live_limit = min(max(raw_needed, limit), LIVE_MAX_BASE_ROWS)
+            live_range_h = min(max((live_limit * 60) // 3600 + 2, 1), INFLUX_1M_RETENTION_DAYS * 24)
+            live_rows = await asyncio.to_thread(
+                _query_influx_sync,
+                symbol,
+                "1m",
+                live_limit,
+                live_range_h,
+                None,
+            )
+            candles = _merge_unique(candles, live_rows)
 
         # If 1m cold storage is missing (or sparse), fallback to legacy hourly
         # history for 1h+ intervals so deep scroll remains usable.
@@ -417,20 +383,14 @@ async def get_klines(
                     candles[-1]["high"] = max(candles[-1]["high"], live_price)
                     candles[-1]["low"] = min(candles[-1]["low"], live_price)
                 elif not candles or aligned_time > candles[-1]["openTime"]:
-                    src = f"candle:1m:{symbol}"
-                    raw_sub = await r.zrangebyscore(
-                        src, aligned_time, aligned_time + target_ms - 1,
-                    )
-                    if raw_sub:
-                        sub = [json.loads(c) for c in raw_sub]
-                        candles.append({
-                            "openTime": aligned_time,
-                            "open": sub[0]["o"],
-                            "high": max(c["h"] for c in sub),
-                            "low": min(c["l"] for c in sub),
-                            "close": sub[-1]["c"],
-                            "volume": round(sum(c["v"] for c in sub), 8),
-                        })
+                    candles.append({
+                        "openTime": aligned_time,
+                        "open": live_price,
+                        "high": live_price,
+                        "low": live_price,
+                        "close": live_price,
+                        "volume": 0.0,
+                    })
         result = candles[-limit:]
     
     # Cache result in Redis (0.1 second TTL for ultra-low latency)
