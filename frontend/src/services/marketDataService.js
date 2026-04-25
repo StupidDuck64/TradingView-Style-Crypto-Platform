@@ -10,12 +10,12 @@
 
 // ─── Config ──────────────────────────────────────────────────────
 // Toggle to 'mock' for local development without backend.
-const DATA_SOURCE = process.env.REACT_APP_DATA_SOURCE || "api"; // 'mock' | 'api'
+const DATA_SOURCE = import.meta.env.VITE_DATA_SOURCE || "api"; // 'mock' | 'api'
 
 // Base URL of your backend REST/WebSocket endpoint.
 // Defaults to '/api' when served behind a reverse proxy.
 // For local dev without Docker: REACT_APP_API_BASE_URL=http://localhost:8080/api
-const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || "/api";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 
 // ─── Timeframe helpers ────────────────────────────────────────────
 export const TIMEFRAMES = {
