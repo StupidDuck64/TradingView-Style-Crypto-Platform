@@ -1,4 +1,10 @@
-# Crypto Real-Time Data Platform
+# Crypto Real-Time Data Platform 🚀
+
+[![Docker](https://img.shields.io/badge/Docker-21_Services-blue?logo=docker)](docker-compose.yml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](backend/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](frontend/)
+[![Apache Flink](https://img.shields.io/badge/Apache_Flink-1.18.1-E6522C?logo=apacheflink)](src/processing/)
+[![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-3.9.0-231F20?logo=apachekafka)](docker-compose.yml)
 
 Dự án streaming giá crypto real-time từ Binance WebSocket, xử lý bằng Flink + Spark theo kiến trúc **Lambda** (speed layer + batch layer), phục vụ qua FastAPI + React dashboard.
 
@@ -16,9 +22,9 @@ Dự án streaming giá crypto real-time từ Binance WebSocket, xử lý bằng
 
 ```
 Dagster (scheduled):
-  Manual/On-demand ── backfill_historical.py ──→ InfluxDB + Iceberg
-  03:00 AM ── iceberg_maintenance.py ──→ Compact/Expire Iceberg
-  04:00 AM ── aggregate_candles.py   ──→ 1m→1h InfluxDB + Iceberg
+  Manual/On-demand ── src/batch/backfill.py ──→ InfluxDB + Iceberg
+  03:00 AM ── src/batch/maintenance.py ──→ Compact/Expire Iceberg
+  04:00 AM ── src/batch/aggregate.py   ──→ 1m→1h InfluxDB + Iceberg
 ```
 
 ## Yêu cầu
@@ -36,25 +42,25 @@ cp .env.example .env
 # Mở .env và thay đổi các giá trị mật khẩu/token
 
 # 1. Build & start toàn bộ 21 services (bao gồm FastAPI + Nginx + certbot/duckdns)
-docker compose up -d --build
+docker compose run --rm influx-backfill python /app/src/batch/backfill.py --mode populate --days 90
 
 # 2. Submit Flink streaming job (6 writer: ticker/kline/indicator/depth → KeyDB + InfluxDB)
 #    Parallelism=3, 4 task slots — tối ưu cho 400 symbols
-docker exec -d flink-jobmanager bash -c "cd /app && /opt/flink/bin/flink run -py src/ingest_flink_crypto.py -d"
+docker exec flink-jobmanager flink run --python /app/src/processing/pipeline.py --pyFiles /app/src -d
 
 # 3. Submit Spark streaming job (3 query: ticker/trades/klines → Iceberg)
 docker exec -d spark-master /opt/spark/bin/spark-submit \
   --master spark://spark-master:7077 \
   --packages "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5,org.apache.spark:spark-avro_2.12:3.5.5,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.7.1,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262" \
   --conf spark.cores.max=2 \
-  /app/src/ingest_crypto.py
+  /app/src/lakehouse/pipeline.py
 
 # 4. (Tuỳ chọn) Backfill dữ liệu lịch sử ngay, nếu không thì 2h sáng Dagster tự chạy
 docker exec spark-master /opt/spark/bin/spark-submit \
   --master spark://spark-master:7077 \
   --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2,org.apache.hadoop:hadoop-aws:3.3.4,org.postgresql:postgresql:42.7.2" \
   --conf spark.driver.memory=2g --conf spark.executor.memory=2g \
-  /app/src/backfill_historical.py --mode all --iceberg-mode incremental
+  --python /app/src/processing/pipeline.py \--mode all --iceberg-mode incremental
 ```
 
 > Bước 2-3 submit streaming job thủ công (chạy liên tục, không qua Dagster). Bước 4 chạy 1 lần để nạp dữ liệu lịch sử, sau đó Dagster tự chạy lại lúc 2:00 AM hằng ngày.
@@ -87,13 +93,14 @@ cryptoprice_local/
 ├── .env.example                    # Template — copy sang .env rồi sửa
 ├── spark-defaults.conf             # Spark config
 ├── src/
-│   ├── producer_binance.py         # [Auto] Binance WS → Kafka
-│   ├── ingest_flink_crypto.py      # [Manual] Flink: Kafka → KeyDB + InfluxDB
-│   ├── ingest_crypto.py            # [Manual] Spark Streaming: Kafka → Iceberg
-│   ├── backfill_historical.py      # [Manual] Backfill InfluxDB + Iceberg
-│   ├── aggregate_candles.py        # [Dagster 04:00] Gộp nến 1m → 1h
-│   ├── iceberg_maintenance.py      # [Dagster CN 03:00] Compact/expire Iceberg
-│   └── candle_query_helper.py       # Helper truy vấn/chuẩn hoá dữ liệu nến
+│   ├── producer/main.py            # [Auto] Binance WS → Kafka
+│   ├── processing/pipeline.py      # [Manual] Flink: Kafka → KeyDB + InfluxDB
+│   ├── lakehouse/pipeline.py       # [Manual] Spark Streaming: Kafka → Iceberg
+│   ├── batch/backfill.py           # [Manual] Backfill InfluxDB + Iceberg
+│   ├── batch/aggregate.py          # [Dagster 04:00] Gộp nến 1m → 1h
+│   ├── batch/maintenance.py        # [Dagster CN 03:00] Compact/expire Iceberg
+│   ├── common/                     # Shared infrastructure (Kafka, Avro, config, logging)
+│   └── exchanges/                  # Exchange abstractions (Binance, etc.)
 ├── serving/                        # FastAPI serving layer
 │   ├── main.py                     # App + lifespan + CORS + health check
 │   ├── config.py                   # Biến môi trường (Redis, InfluxDB, Trino)
@@ -130,7 +137,7 @@ cryptoprice_local/
 
 ## Chi tiết từng file
 
-### `src/producer_binance.py` — Quad-Stream Producer
+### `src/producer/main.py` — Quad-Stream Producer
 
 Tự chạy khi `docker compose up`. Kết nối **7 WebSocket** tới Binance cho **400 symbols USDT**, đẩy vào 4 Kafka topics:
 
@@ -145,7 +152,7 @@ Kafka: 3 partitions/topic, LZ4 compression, 48h retention.
 
 Giới hạn 200 symbols/connection để tránh bị Binance rate-limit (502). Tự reconnect khi mất kết nối.
 
-### `src/ingest_flink_crypto.py` — Flink Streaming Job
+### `src/processing/pipeline.py` — Flink Streaming Job
 
 Submit thủ công 1 lần, chạy liên tục. Đọc từ 3 Kafka topics, chạy **6 writer song song**:
 
@@ -158,7 +165,7 @@ Submit thủ công 1 lần, chạy liên tục. Đọc từ 3 Kafka topics, ch�
 | `IndicatorWriter`     | crypto_klines (closed) | `indicator:latest:{symbol}` + `indicators` measurement | Tính SMA20, SMA50, EMA12, EMA26 từ giá đóng nến. Ghi cả KeyDB và InfluxDB |
 | `DepthWriter`         | crypto_depth           | `orderbook:{symbol}`                                   | Top 20 bid/ask + best_bid/ask + spread. TTL 60s                           |
 
-### `src/ingest_crypto.py` — Spark Streaming to Iceberg
+### `src/lakehouse/pipeline.py` — Spark Streaming to Iceberg
 
 Submit thủ công 1 lần, chạy liên tục. Đọc 3 Kafka topics, ghi vào **3 bảng Iceberg** trên MinIO:
 
@@ -170,7 +177,7 @@ Submit thủ công 1 lần, chạy liên tục. Đọc 3 Kafka topics, ghi vào 
 
 Schema: `iceberg.crypto_lakehouse.*` — query bằng Trino tại http://localhost:8083.
 
-### `src/backfill_historical.py` — Unified Backfill
+### `src/batch/backfill.py` — Unified Backfill
 
 Gộp chức năng cũ của `backfill_influx.py` + `ingest_historical_iceberg.py`. Hỗ trợ 3 mode:
 
@@ -180,7 +187,7 @@ Gộp chức năng cũ của `backfill_influx.py` + `ingest_historical_iceberg.p
 | `--mode iceberg` | Kéo klines lịch sử từ Binance → Iceberg. `--iceberg-mode backfill` kéo từ 2017, `incremental` kéo từ nến cuối |
 | `--mode all`     | Chạy cả hai (mặc định khi Dagster gọi lúc 02:00 AM)                                                           |
 
-### `src/aggregate_candles.py` — Candle Aggregation
+### `src/batch/aggregate.py` — Candle Aggregation
 
 Gộp nến 1 phút → 1 giờ để giảm dữ liệu phình. Chạy trên cả 2 layer:
 
@@ -189,7 +196,7 @@ Gộp nến 1 phút → 1 giờ để giảm dữ liệu phình. Chạy trên c�
 
 Dagster tự chạy lúc 04:00 AM hàng ngày.
 
-### `src/iceberg_maintenance.py` — Iceberg Table Maintenance
+### `src/batch/maintenance.py` — Iceberg Table Maintenance
 
 Chạy 4 tác vụ bảo trì trên tất cả bảng Iceberg:
 
@@ -207,8 +214,8 @@ Dagster tự chạy Chủ Nhật lúc 03:00 AM.
 | Asset                       | Schedule           | Chức năng                                       |
 | :-------------------------- | :----------------- | :---------------------------------------------- |
 | `backfill_historical`       | **Chạy thủ công**  | Backfill InfluxDB gaps + Iceberg klines         |
-| `aggregate_candles`         | 04:00 AM hàng ngày | Gọi `aggregate_candles.py --mode all`           |
-| `iceberg_table_maintenance` | 03:00 AM Chủ Nhật  | Gọi `iceberg_maintenance.py`                    |
+| `aggregate_candles`         | 04:00 AM hàng ngày | Gọi `src/batch/aggregate.py --mode all`           |
+| `iceberg_table_maintenance` | 03:00 AM Chủ Nhật  | Gọi `src/batch/maintenance.py`                    |
 
 > **Lưu ý:** `backfill_historical` **không có schedule tự động**. Chỉ chạy thủ công khi cần (xem phần "Lệnh backfill thủ công" ở trên).
 

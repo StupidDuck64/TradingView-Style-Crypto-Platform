@@ -72,7 +72,7 @@ Kiến trúc Lambda chia dữ liệu xử lý thành 3 đường song song:
                          │   !ticker@arr  |  @kline_1s  |  @aggTrade  |  @depth   │
                          └──────────────────────────┬──────────────────────────────┘
                                                     │
-                                            [producer_binance.py]
+                                            [src/producer/main.py]
                                          Avro serialize → Kafka
                                                     │
                ┌────────────────────────────────────┼──────────────────────────────────┐
@@ -100,7 +100,7 @@ Kiến trúc Lambda chia dữ liệu xử lý thành 3 đường song song:
                │  [Batch Layer — chạy qua Dagster schedule]
                │
                ▼
-        [backfill_historical.py]           [aggregate_candles.py]
+        [src/batch/backfill.py]           [src/batch/aggregate.py]
          Binance REST → Iceberg             1m → 1h aggregation
          historical_hourly table            coin_klines_hourly table
                │
@@ -138,14 +138,14 @@ Kiến trúc Lambda chia dữ liệu xử lý thành 3 đường song song:
 
 ```
 Binance WS (!ticker@arr, batch mỗi 14-30s)
-  → producer_binance.py → Avro serialize
+  → src/producer/main.py → Avro serialize
   → Kafka topic: crypto_ticker
   → Flink: KeyDBWriter / InfluxDBWriter
   → KeyDB: ticker:latest:{symbol} (hash)
   → InfluxDB: market_ticks measurement
 
 Binance WS (@kline_1s mỗi symbol, 1 message/giây)
-  → producer_binance.py → Avro serialize
+  → src/producer/main.py → Avro serialize
   → Kafka topic: crypto_klines (interval=1s)
   → Flink: KeyDBKlineWriter → candle:1s:{symbol} (sorted set, TTL 8h)
   → Flink: InfluxDBKlineWriter → InfluxDB candles (interval=1s)
@@ -175,19 +175,19 @@ Binance WS (@depth20@100ms mỗi symbol)
 
 ```
 Manual run (không schedule):
-  spark-submit backfill_historical.py --mode all --iceberg-mode incremental
+  spark-submit src/batch/backfill.py --mode all --iceberg-mode incremental
     - Lấy timestamp mới nhất trong Iceberg historical_hourly
     - Binance REST API: kéo 1h klines từ đó đến nay → Iceberg
     - Detect gap InfluxDB 7 ngày → fill từ Binance REST → InfluxDB
 
 Dagster schedule (daily 04:00 UTC):
-  spark-submit aggregate_candles.py
+  spark-submit src/batch/aggregate.py
     - Đọc InfluxDB 1m → aggregate → 1h → ghi lại InfluxDB
     - Đọc Iceberg historical_hourly → aggregate → coin_klines_hourly
     - Xóa InfluxDB 1m data cũ hơn RETENTION_1M_DAYS ngày (mặc định 90)
 
 Dagster schedule (weekly Sunday 03:00 UTC):
-  spark-submit iceberg_maintenance.py
+  spark-submit src/batch/maintenance.py
 ```
 
 ### 3.3 API serving path (backend/)
@@ -288,7 +288,7 @@ Lưu metadata cho 2 mục đích:
 
 **2 containers:** `flink-jobmanager` (2.5GB RAM cap) và `flink-taskmanager` (7GB RAM cap, 6GB reserved)
 
-**Job file:** `src/ingest_flink_crypto.py` — PyFlink, submit qua REST API
+**Job file:** `src/processing/pipeline.py` — PyFlink, submit qua REST API
 
 **Checkpointing:**
 - Backend: HashMapStateBackend
@@ -392,7 +392,7 @@ TradeWriter (MapFunction):
 
 Spark chỉ chạy khi được gọi bởi Dagster (không idle). Các jobs:
 
-#### `src/backfill_historical.py`
+#### `src/batch/backfill.py`
 
 ```
 --mode populate:
@@ -414,7 +414,7 @@ Spark chỉ chạy khi được gọi bởi Dagster (không idle). Các jobs:
   Chạy cả influx + iceberg incremental (dùng bởi Dagster daily)
 ```
 
-#### `src/aggregate_candles.py`
+#### `src/batch/aggregate.py`
 
 ```
 Input: InfluxDB 1m candles (query Flux → DataFrame)
@@ -430,7 +430,7 @@ Output: Iceberg upsert
 Cleanup: Delete InfluxDB 1m points older than RETENTION_1M_DAYS
 ```
 
-#### `src/iceberg_maintenance.py`
+#### `src/batch/maintenance.py`
 
 ```
 expireSnapshots(older_than=30_days)
@@ -461,9 +461,9 @@ State lưu trong PostgreSQL `dagster` database.
 
 | Asset | Mô tả | Schedule |
 |---|---|---|
-| `backfill_historical` | `spark-submit backfill_historical.py --mode all --iceberg-mode incremental` | Thủ công (không có schedule) |
-| `aggregate_candles` | `spark-submit aggregate_candles.py --mode all` — 1m→1h + retention cleanup | Daily 04:00 UTC |
-| `iceberg_table_maintenance` | `spark-submit iceberg_maintenance.py` — compact + expire | Weekly Sunday 03:00 UTC |
+| `backfill_historical` | `spark-submit src/batch/backfill.py --mode all --iceberg-mode incremental` | Thủ công (không có schedule) |
+| `aggregate_candles` | `spark-submit src/batch/aggregate.py --mode all` — 1m→1h + retention cleanup | Daily 04:00 UTC |
+| `iceberg_table_maintenance` | `spark-submit src/batch/maintenance.py` — compact + expire | Weekly Sunday 03:00 UTC |
 
 Dagster Daemon poll schedule mỗi 30s, tạo Run khi đến schedule, submit Spark job qua subprocess, stream log vào Dagster UI.
 
@@ -778,13 +778,14 @@ onVisibleLogicalRangeChanged(range):
 
 | File | Dòng code | Chức năng chính |
 |---|---|---|
-| `src/ingest_flink_crypto.py` | 995 | Flink job: 5 pipelines, 7+ writer/processor classes |
-| `src/backfill_historical.py` | 841 | Multi-mode backfill script (Spark/direct) |
-| `src/producer_binance.py` | 631 | Binance WS → Kafka Avro producer |
-| `src/candle_query_helper.py` | 357 | Shared Flux query helpers |
-| `src/ingest_crypto.py` | 324 | Spark Structured Streaming → Iceberg |
-| `src/iceberg_maintenance.py` | 173 | Iceberg compaction + snapshot expiry |
-| `src/aggregate_candles.py` | 163 | Spark 1m→1h aggregation + retention |
+| `src/processing/pipeline.py` | ~210 | Flink job entry point (writers split into modules) |
+| `src/producer/main.py` | ~260 | Binance WS → Kafka Avro producer |
+| `src/lakehouse/pipeline.py` | ~220 | Spark Structured Streaming → Iceberg |
+| `src/batch/backfill.py` | ~510 | Multi-mode backfill script (Spark/direct) |
+| `src/batch/aggregate.py` | ~120 | Spark 1m→1h aggregation + retention |
+| `src/batch/maintenance.py` | ~130 | Iceberg compaction + snapshot expiry |
+| `src/common/` | - | Shared infrastructure (Kafka, Avro, config, logging) |
+| `src/exchanges/` | - | Exchange abstractions (Binance, etc.) |
 | `frontend/src/components/CandlestickChart.js` | 997 | Main chart component |
 | `frontend/src/services/marketDataService.js` | 388 | API service layer |
 | `frontend/src/App.js` | 290 | Main React app layout |
@@ -920,7 +921,7 @@ onVisibleLogicalRangeChanged(range):
 - **Fields:** open, high, low, close, volume, quote_volume (float64); trade_count (int64); is_closed (bool)
 - **Time precision:** ms (epoch milliseconds)
 - **Data:** ~129,000 candles/symbol cho 90 ngày 1m data
-- **Retention:** Spark job xóa 1m data cũ hơn 90 ngày (aggregate_candles.py)
+- **Retention:** Spark job xóa 1m data cũ hơn 90 ngày (src/batch/aggregate.py)
 
 ### Measurement: `market_ticks`
 
@@ -1009,14 +1010,14 @@ from dagster import asset, AssetExecutionContext, ScheduleDefinition
 @asset(group_name="ingestion", description="Daily backfill: Binance → Iceberg + InfluxDB gap fill")
 def backfill_historical(context: AssetExecutionContext):
     subprocess.run(["spark-submit", 
-                    "/app/src/backfill_historical.py",
+                    "/app/src/batch/backfill.py",
                     "--mode", "all",
                     "--iceberg-mode", "incremental"], check=True)
 
 @asset(group_name="maintenance", description="Daily aggregate 1m→1h + retention cleanup")
 def aggregate_candles(context: AssetExecutionContext):
     subprocess.run(["spark-submit",
-                    "/app/src/aggregate_candles.py"], check=True)
+                    "/app/src/batch/aggregate.py"], check=True)
 
 backfill_schedule = ScheduleDefinition(
     job=define_asset_job("backfill_job", [backfill_historical]),
@@ -1057,7 +1058,7 @@ docker compose up -d
 docker compose ps  # tất cả "healthy"
 
 # 4. Khởi tạo dữ liệu lịch sử InfluxDB (90 ngày)
-docker compose run --rm influx-backfill python /app/backfill_historical.py --mode populate --days 90
+docker compose run --rm influx-backfill python /app/src/batch/backfill.py --mode populate --days 90
 # Chạy khoảng 30-60 phút cho 400 symbols × 90 ngày
 
 # 5. Submit Flink job

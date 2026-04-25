@@ -33,8 +33,4 @@ spark-events/
 Thumbs.db
 
 .idea
-.gitignore
 .env
-
-# AI assistant tracking (local only)
-docs/TRACKING.md
