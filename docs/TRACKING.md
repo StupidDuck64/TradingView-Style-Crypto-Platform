@@ -23,14 +23,16 @@
 |---|---|---|
 | Message broker | Apache Kafka (KRaft) | 3.9.0 |
 | Schema registry | Apicurio | 2.6.2 |
-| Stream processing | Apache Flink (PyFlink) | 1.18.1 |
-| Batch processing | Apache Spark | 3.5 |
+| Stream processing | Apache Flink (PyFlink) | 1.18.1 (Python 3.10.12) |
+| Batch processing | Apache Spark | 3.5 (Python 3.10) |
 | Hot cache | KeyDB | latest |
 | Time-series DB | InfluxDB | 2.7 |
 | Cold storage | Iceberg + MinIO | 1.5.2 + latest |
 | Federated query | Trino | 442 |
-| Orchestration | Dagster | latest |
-| API server | FastAPI + Uvicorn | 0.115+ |
+| Orchestration | Dagster | latest (Python 3.8.10) |
+| API server | FastAPI + Uvicorn | 0.115+ (Python 3.11-slim) |
+| Producer | Python WebSocket | Python 3.11-slim |
+| Backfill | Python requests | Python 3.14-slim |
 | Frontend | React 19 + lightweight-charts | v5.1.0 |
 | CSS framework | TailwindCSS | 3.4.4 |
 | Language | TypeScript (strict) | 5.7+ |
@@ -141,7 +143,10 @@ project-root/
    - Full i18n via `useI18n()` hook — no hardcoded user-facing strings
    - Time convention: lightweight-charts uses seconds, API uses milliseconds
    - Shared types live in `src/types/index.ts`
-3. **Docker:** Changes to services must be reflected in `docker-compose.yml`. Use existing build patterns. For local development, prefer using `make dev` and `make prod` workflows.
+3. **Python Versions & Compatibility:** Keep the services compatible with their respective environments:
+   - **Producer/FastAPI:** Standardized on Python 3.11. Avoid upgrading to 3.12+ until dependencies like `fastavro` and `kafka-python` have been verified or replaced.
+   - **Flink/Spark:** Rely on the bundled Python versions (3.10) in their respective Docker images. Do not force Python 3.12 on PyFlink 1.18 due to `distutils` removal.
+4. **Docker:** Changes to services must be reflected in `docker-compose.yml`. Use existing build patterns. For local development, prefer using `make dev` and `make prod` workflows.
 
 ### 2.3 Language
 
@@ -247,6 +252,24 @@ dist/assets/index-*.js          471.79 kB │ gzip: 146.62 kB
 ## 4. Changelog
 
 All changes made by AI assistant, in reverse chronological order.
+
+### 2026-04-28 — Session 6: Infrastructure & Pipeline Restoration
+
+**Task:** Fix the broken data pipeline, resolving Docker build errors, network bindings, and Flink `RESTARTING` loops.
+
+**Changes:**
+1. **Producer Image Rebuild & Python Downgrade** — The `producer` container failed to start due to a stale code reference (`src/producer_binance.py`). During the rebuild, compilation of `fastavro` failed under `python:3.14-slim`. Downgraded the `producer` Dockerfile to `python:3.11-slim` to ensure C-extension compatibility.
+2. **Nginx Port Conflict** — `dagster-webserver` and `nginx` both attempted to bind to host port `3000`. Removed the `3000:80` mapping for `nginx` in `docker-compose.override.yml`, as Nginx already serves frontend/API traffic correctly on port `80`.
+3. **Binance WebSocket Timeout** — The Flink job was missing the `crypto_ticker` Kafka topic because the `!ticker@arr` stream silently timed out. Switched the `WS_TICKER_URL` to `!miniTicker@arr` in `src/exchanges/binance/client.py`, which is lighter and reliably connects.
+4. **Flink Dependency Distribution** — The Flink job crashed with `ModuleNotFoundError: No module named 'processing'`. Updated `scripts/auto_submit_jobs.sh` to correctly pass `--pyFiles /app/src` so the Flink TaskManagers have access to the local Python modules.
+
+**Notes/Gotchas discovered:**
+- When a folder structure changes (e.g., `src/producer/main.py`), Docker images must be rebuilt. `docker compose up -d` does not automatically rebuild images unless `--build` is passed.
+- Python 3.12+ compatibility is a major concern. Flink 1.18 relies on the deprecated `distutils`, and older libraries like `kafka-python` fail entirely on Python 3.12. Stick to Python 3.11 for safety.
+- Binance `!ticker@arr` stream might time out or be rate-limited depending on payload size/region; `!miniTicker@arr` is a safer alternative.
+
+**Impact:**
+- Infrastructure: Restored stability across producer, Flink, and frontend networking. Data correctly flows into KeyDB and InfluxDB again.
 
 ### 2026-04-28 — Session 5: Frontend TypeScript Migration
 

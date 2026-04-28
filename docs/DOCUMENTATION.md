@@ -2,19 +2,6 @@
 
 > **Mục tiêu tài liệu:** Giải thích sâu toàn bộ hệ thống từ luồng dữ liệu, kiến trúc, từng service, đến logic xử lý trong code — để bạn hiểu được "cái gì làm gì và tại sao".
 
-> **Bổ sung cập nhật hiện trạng (2026-04-25):**
-> - Docker Compose hiện chạy theo cấu hình **21 services**.
-> - **Backend đã refactor**: `serving/` → `backend/` (MVC: `api/`, `services/`, `models/`, `core/`).
-> - **Frontend đã migrate**: TypeScript + React 19. Tất cả file `.jsx`/`.js` đã chuyển sang `.tsx`/`.ts`.
-> - **Dev/Prod mode**: `docker-compose.override.yml` (dev), `docker-compose.prod.yml` (prod).
-> - **Makefile**: `make dev`, `make prod`, `make test`, `make test-cov`.
-> - **Testing**: pytest framework with 40+ tests (unit, security).
-> - Endpoint historical chính thức: `GET /api/klines/historical`.
-> - WebSocket stream: `WS /api/stream?symbol=&interval=`.
-> - Dagster chỉ giữ 2 schedule: `daily_candle_aggregation` (04:00 hằng ngày) và `weekly_iceberg_maintenance` (03:00 Chủ Nhật).
-> - HTTPS automation: Let's Encrypt via certbot + DuckDNS dynamic DNS.
-> - Nginx rate limiting: 30r/s API, 5r/s WebSocket per IP.
-> - Xem `docs/TRACKING.md` (gitignored) cho changelog chi tiết.
 
 ---
 

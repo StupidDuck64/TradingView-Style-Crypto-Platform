@@ -2,7 +2,7 @@
 
 [![Docker](https://img.shields.io/badge/Docker-21_Services-blue?logo=docker)](docker-compose.yml)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi)](backend/)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](frontend/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)](frontend/)
 [![Apache Flink](https://img.shields.io/badge/Apache_Flink-1.18.1-E6522C?logo=apacheflink)](src/processing/)
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-3.9.0-231F20?logo=apachekafka)](docker-compose.yml)
 
@@ -41,12 +41,11 @@ Dagster (scheduled):
 cp .env.example .env
 # Mở .env và thay đổi các giá trị mật khẩu/token
 
-# 1. Build & start toàn bộ 21 services (bao gồm FastAPI + Nginx + certbot/duckdns)
-docker compose run --rm influx-backfill python /app/src/batch/backfill.py --mode populate --days 90
+# 1. Build & start toàn bộ 21 services
+docker compose up -d --build
 
 # 2. Submit Flink streaming job (6 writer: ticker/kline/indicator/depth → KeyDB + InfluxDB)
-#    Parallelism=3, 4 task slots — tối ưu cho 400 symbols
-docker exec flink-jobmanager flink run --python /app/src/processing/pipeline.py --pyFiles /app/src -d
+docker exec flink-jobmanager flink run -d -py /app/src/processing/pipeline.py --pyFiles /app/src
 
 # 3. Submit Spark streaming job (3 query: ticker/trades/klines → Iceberg)
 docker exec -d spark-master /opt/spark/bin/spark-submit \
@@ -55,12 +54,15 @@ docker exec -d spark-master /opt/spark/bin/spark-submit \
   --conf spark.cores.max=2 \
   /app/src/lakehouse/pipeline.py
 
-# 4. (Tuỳ chọn) Backfill dữ liệu lịch sử ngay, nếu không thì 2h sáng Dagster tự chạy
+# 4. Nạp dữ liệu lịch sử lần đầu (90 ngày)
+docker compose run --rm influx-backfill python /app/src/batch/backfill.py --mode populate --days 90
+
+# 5. (Tuỳ chọn) Chạy incremental backfill ngay (thay vì đợi Dagster 2:00 AM)
 docker exec spark-master /opt/spark/bin/spark-submit \
   --master spark://spark-master:7077 \
   --packages "org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.5.2,org.apache.iceberg:iceberg-aws-bundle:1.5.2,org.apache.hadoop:hadoop-aws:3.3.4,org.postgresql:postgresql:42.7.2" \
   --conf spark.driver.memory=2g --conf spark.executor.memory=2g \
-  --python /app/src/processing/pipeline.py \--mode all --iceberg-mode incremental
+  /app/src/batch/backfill.py --mode all --iceberg-mode incremental
 ```
 
 > Bước 2-3 submit streaming job thủ công (chạy liên tục, không qua Dagster). Bước 4 chạy 1 lần để nạp dữ liệu lịch sử, sau đó Dagster tự chạy lại lúc 2:00 AM hằng ngày.
@@ -101,11 +103,12 @@ cryptoprice_local/
 │   ├── batch/maintenance.py        # [Dagster CN 03:00] Compact/expire Iceberg
 │   ├── common/                     # Shared infrastructure (Kafka, Avro, config, logging)
 │   └── exchanges/                  # Exchange abstractions (Binance, etc.)
-├── serving/                        # FastAPI serving layer
-│   ├── main.py                     # App + lifespan + CORS + health check
-│   ├── config.py                   # Biến môi trường (Redis, InfluxDB, Trino)
-│   ├── connections.py              # Singleton connections (KeyDB, InfluxDB, Trino)
-│   └── routers/
+├── backend/                        # FastAPI serving layer (MVC Architecture)
+│   ├── app.py                      # App + lifespan + CORS + health check
+│   ├── core/                       # Biến môi trường, database connections
+│   ├── models/                     # Pydantic schemas
+│   ├── services/                   # Business logic (candle_service)
+│   └── api/                        # Route handlers
 │       ├── klines.py               # GET /api/klines — nến OHLCV (KeyDB + InfluxDB)
 │       ├── historical.py           # GET /api/klines/historical — nến lịch sử (Trino/Iceberg)
 │       ├── ticker.py               # GET /api/ticker + /api/ticker/{symbol}
@@ -113,13 +116,13 @@ cryptoprice_local/
 │       ├── trades.py               # GET /api/trades/{symbol}
 │       ├── symbols.py              # GET /api/symbols — danh sách coin
 │       ├── indicators.py           # GET /api/indicators/{symbol} — SMA/EMA
-│       └── ws.py                   # WS /api/stream?symbol=&interval= — streaming real-time
-├── frontend/                       # React SPA (TradingView-style dashboard)
+│       └── websocket.py            # WS /api/stream?symbol=&interval= — streaming real-time
+├── frontend/                       # React 19 SPA (Vite + TypeScript)
 │   ├── src/
-│   │   ├── App.js                  # Layout chính + fetch symbols/tickers
+│   │   ├── App.tsx                 # Main dashboard layout
 │   │   ├── components/             # Chart, OrderBook, RecentTrades, MarketSelector...
-│   │   ├── services/marketDataService.js  # API client (mock/api toggle)
-│   │   └── hooks/useCandlestickData.js    # Chart data hook
+│   │   ├── services/               # API clients (marketDataService.ts)
+│   │   └── types/                  # TypeScript interfaces
 │   └── package.json
 ├── orchestration/
 │   ├── assets.py                   # Dagster: 3 assets + 2 schedules
@@ -221,7 +224,7 @@ Dagster tự chạy Chủ Nhật lúc 03:00 AM.
 
 Tất cả chạy qua `spark-submit` trên Spark cluster.
 
-### `serving/` — FastAPI Serving Layer
+### `backend/` — FastAPI Serving Layer (MVC Architecture)
 
 Cung cấp REST API + WebSocket cho frontend. Kết nối 3 data source tuỳ theo loại truy vấn:
 
@@ -234,19 +237,19 @@ Cung cấp REST API + WebSocket cho frontend. Kết nối 3 data source tuỳ th
 | `trades.py`     | `GET /api/trades/{symbol}` | KeyDB                        | Tick history gần nhất                        |
 | `symbols.py`    | `GET /api/symbols`    | KeyDB scan                   | Danh sách coin đang có dữ liệu               |
 | `indicators.py` | `GET /api/indicators/{symbol}` | KeyDB                  | SMA20, SMA50, EMA12, EMA26                   |
-| `ws.py`         | `WS /api/stream?symbol=&interval=` | KeyDB              | Streaming nến real-time (500ms interval)     |
+| `websocket.py`  | `WS /api/stream?symbol=&interval=` | KeyDB              | Streaming nến real-time (500ms interval)     |
 
 Health check: `GET /api/health` — ping KeyDB, InfluxDB, Trino.
 
 ### `frontend/` — React Dashboard
 
-Giao diện TradingView-style, build bằng React 18 + lightweight-charts. Nginx phục vụ SPA tại port 80, proxy `/api/` tới FastAPI.
+Giao diện TradingView-style, build bằng Vite + React 19 + TypeScript + lightweight-charts. Nginx phục vụ SPA tại port 80, proxy `/api/` tới FastAPI.
 
 - **CandlestickChart**: Biểu đồ nến OHLCV real-time + lịch sử, hỗ trợ 8 timeframe (1s, 1m, 5m, 15m, 1H, 4H, 1D, 1W)
-- **MarketSelector**: Tìm kiếm/chọn symbol, hiển thị giá + % thay đổi
+- **MarketSelector**: Tìm kiếm/chọn symbol động qua CoinGecko API, hiển thị giá + % thay đổi
 - **OrderBook**: Sổ lệnh real-time với thanh depth
 - **RecentTrades**: Giao dịch gần nhất, màu xanh/đỏ theo phía mua/bán
-- **ErrorBoundary**: Bắt lỗi toàn cục, cho phép retry từng component
+- **ErrorBoundary & ToastProvider**: Bắt lỗi toàn cục, hiển thị thông báo lỗi thân thiện
 
 ### `docker/nginx/` — Nginx Reverse Proxy
 
