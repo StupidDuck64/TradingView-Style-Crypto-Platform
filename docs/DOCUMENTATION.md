@@ -5,6 +5,7 @@
 > **Bổ sung cập nhật hiện trạng (2026-04-25):**
 > - Docker Compose hiện chạy theo cấu hình **21 services**.
 > - **Backend đã refactor**: `serving/` → `backend/` (MVC: `api/`, `services/`, `models/`, `core/`).
+> - **Frontend đã migrate**: TypeScript + React 19. Tất cả file `.jsx`/`.js` đã chuyển sang `.tsx`/`.ts`.
 > - **Dev/Prod mode**: `docker-compose.override.yml` (dev), `docker-compose.prod.yml` (prod).
 > - **Makefile**: `make dev`, `make prod`, `make test`, `make test-cov`.
 > - **Testing**: pytest framework with 40+ tests (unit, security).
@@ -56,7 +57,9 @@
 | Federated query | Trino | 442 |
 | Orchestration | Dagster | latest |
 | API server | FastAPI + Uvicorn | 0.115+ |
-| Frontend | React 18 + lightweight-charts | v5.1.0 |
+| Frontend | React 19 + lightweight-charts | v5.1.0 |
+| Frontend Language | TypeScript (strict) | 5.7+ |
+| Build Tool | Vite | 6.4 |
 | Reverse proxy | Nginx | 1.27 |
 | Metadata DB | PostgreSQL | 16 |
 
@@ -640,16 +643,56 @@ elif interval in ("1m", "5m", ...):
 
 ---
 
-## 8. Lớp Frontend (React)
+## 8. Lớp Frontend (React 19 + TypeScript)
 
 Nginx serve React SPA + proxy API:
 - `location /api/` → `proxy_pass fastapi:8000`
 - `location /api/stream` → WebSocket upgrade: `proxy_pass fastapi:8000`, `Upgrade: websocket`
+- `location /assets/` → Vite hashed bundles, cache 1 year (immutable)
 
-**TimeFrame constants** (`frontend/src/constants/chartConstants.js`):
+**Cấu trúc thư mục frontend:**
 
-```js
-export const TIMEFRAMES = ["1s", "1m", "5m", "15m", "1H", "4H", "1D", "1W"]
+```
+frontend/src/
+├── App.tsx                        # Main dashboard layout
+├── index.tsx                      # Entry point (ErrorBoundary, ToastProvider, I18nProvider)
+├── types/index.ts                 # 18 shared TypeScript interfaces
+├── components/                    # 16 components (.tsx)
+│   ├── CandlestickChart.tsx       # ~1020 dòng — component chính
+│   ├── ChartOverlay.tsx           # Drawing overlay (SVG)
+│   ├── MarketSelector.tsx         # Symbol picker (+ useSymbolMeta)
+│   ├── Watchlist.tsx              # Sidebar watchlist (+ useSymbolMeta)
+│   ├── OverviewChart.tsx          # Overview tab (+ useSymbolMeta)
+│   ├── OrderBook.tsx, RecentTrades.tsx
+│   ├── Header.tsx, AuthModal.tsx, LanguageSwitcher.tsx
+│   ├── DrawingToolbar.tsx, ToolSettingsPopup.tsx
+│   ├── SystemHealthCard.tsx, DateRangePicker.tsx
+│   ├── ErrorBoundary.tsx, ToastProvider.tsx
+│   └── chart/                     # Chart sub-modules
+│       ├── chartConstants.ts      # Theme, timeframes, ChartTab type
+│       ├── indicatorUtils.ts      # calcSMA, calcEMA, calcRSI, calcMFI
+│       ├── OHLCVBar.tsx, IndicatorPanel.tsx, OscillatorPane.tsx
+├── services/
+│   ├── marketDataService.ts       # ~388 dòng — API service layer duy nhất
+│   └── symbolMetaService.ts       # CoinGecko API + 24h localStorage cache
+├── hooks/
+│   ├── useApiCall.ts              # Generic data fetching with retry + error toast
+│   └── useSymbolMeta.ts           # Hook lấy symbol logo/tên
+├── contexts/AuthContext.tsx       # Auth state management
+├── i18n/
+│   ├── translations.ts            # ~130 keys (en + vi)
+│   └── index.tsx                  # I18nProvider + useI18n hook
+├── data/fallbackSymbolMeta.ts     # ~90 bundled crypto symbol metadata
+└── utils/
+    ├── storageHelpers.ts          # localStorage helpers
+    └── errors.ts                  # AppError hierarchy (NetworkError, AuthError, etc.)
+```
+
+**TimeFrame constants** (`frontend/src/components/chart/chartConstants.ts`):
+
+```ts
+export const TIMEFRAMES = ["1s", "1m", "5m", "15m", "1H", "4H", "1D", "1W"] as const;
+export type ChartTab = "chart" | "orderBook" | "recentTrades";
 ```
   a. fetchCandles(symbol, tf, limit) → preloadInitialCandles() khi thiếu nến ban đầu
     - timeframe <= 1h: viewport mặc định 50 nến mới nhất
@@ -658,30 +701,29 @@ export const TIMEFRAMES = ["1s", "1m", "5m", "15m", "1H", "4H", "1D", "1W"]
     → applyDataToChart()
 Lưu ý uppercase H/D/W — tất cả API calls dùng `.toLowerCase()` trước khi gửi backend.
 
-### 8.1 `marketDataService.js`
+### 8.1 `marketDataService.ts`
 
 Service layer duy nhất giữa components và backend API:
 
-```js
+```ts
 // endTime tính bằng SECONDS (lightweight-charts convention)
 // Khi gọi API, convert sang ms: endTime * 1000
-fetchCandles(symbol, timeframe, limit = 200, endTime = null)
+fetchCandles(symbol: string, timeframe: string, limit = 200, endTime?: number)
   → GET /api/klines?symbol=&interval=&limit=[&endTime=ms]
 
 // Trả về hàm unsubscribe
-subscribeCandle(symbol, timeframe, onCandle)
+subscribeCandle(symbol: string, timeframe: string, onCandle: (c: Candle) => void)
   → WS /api/stream?symbol=&interval=
-  → const unsub = subscribeCandle(...); // cleanup khi unmount
 
-fetchHistoricalCandles(symbol, startMs, endMs, limit)
+fetchHistoricalCandles(symbol: string, startMs: number, endMs: number, limit: number, interval?: string)
   → GET /api/klines/historical?...
 
-fetchOrderBook(symbol) → GET /api/orderbook/{symbol}
-fetchTrades(symbol) → GET /api/trades/{symbol}
+fetchOrderBook(symbol: string) → GET /api/orderbook/{symbol}
+fetchTrades(symbol: string) → GET /api/trades/{symbol}
 fetchSymbols() → GET /api/symbols
 ```
 
-### 8.2 `CandlestickChart.js` — Component chính (~600 dòng)
+### 8.2 `CandlestickChart.tsx` — Component chính (~1020 dòng)
 
 **State & Refs quan trọng:**
 
@@ -786,9 +828,9 @@ onVisibleLogicalRangeChanged(range):
 | `src/batch/maintenance.py` | ~130 | Iceberg compaction + snapshot expiry |
 | `src/common/` | - | Shared infrastructure (Kafka, Avro, config, logging) |
 | `src/exchanges/` | - | Exchange abstractions (Binance, etc.) |
-| `frontend/src/components/CandlestickChart.js` | 997 | Main chart component |
-| `frontend/src/services/marketDataService.js` | 388 | API service layer |
-| `frontend/src/App.js` | 290 | Main React app layout |
+| `frontend/src/components/CandlestickChart.tsx` | ~1020 | Main chart component (TypeScript) |
+| `frontend/src/services/marketDataService.ts` | ~388 | API service layer |
+| `frontend/src/App.tsx` | ~240 | Main React app layout |
 | `backend/api/klines.py` | ~170 | OHLCV REST endpoint (thin handler) |
 | `backend/api/historical.py` | ~90 | Historical range queries |
 | `backend/api/websocket.py` | ~135 | WebSocket real-time candle stream |

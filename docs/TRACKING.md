@@ -1,8 +1,7 @@
 # TRACKING — AI Assistant Working Document
 
 > **Purpose:** Personal reference for AI assistant to maintain context across sessions.  
-> **Gitignored:** Yes — this file is for local use only, never committed.  
-> **Last updated:** 2026-04-25
+> **Last updated:** 2026-04-28
 
 ---
 
@@ -17,7 +16,6 @@
 - **Data sources:** Binance WebSocket API (~400 USDT pairs)
 
 📄 **For full technical details, see [DOCUMENTATION.md](./DOCUMENTATION.md)**  
-📄 **For architecture diagrams and component details, see [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md)**
 
 ### Quick Reference — Tech Stack
 
@@ -33,8 +31,10 @@
 | Federated query | Trino | 442 |
 | Orchestration | Dagster | latest |
 | API server | FastAPI + Uvicorn | 0.115+ |
-| Frontend | React 18 + lightweight-charts | v5.1.0 |
+| Frontend | React 19 + lightweight-charts | v5.1.0 |
 | CSS framework | TailwindCSS | 3.4.4 |
+| Language | TypeScript (strict) | 5.7+ |
+| Build tool | Vite | 6.4 |
 | Reverse proxy | Nginx | 1.27 |
 | Metadata DB | PostgreSQL | 16 |
 
@@ -45,14 +45,14 @@
 | `src/processing/pipeline.py` | ~210 | Flink job entry point (writers are split into modules) |
 | `src/batch/backfill.py` | ~510 | Multi-mode backfill (Spark/direct) |
 | `src/producer/main.py` | ~260 | Exchange-agnostic WS → Kafka producer |
-| `frontend/src/components/CandlestickChart.js` | 997 | Main chart component |
-| `frontend/src/services/marketDataService.js` | 388 | Frontend API service layer |
+| `frontend/src/components/CandlestickChart.tsx` | ~1020 | Main chart component (TypeScript) |
+| `frontend/src/services/marketDataService.ts` | ~388 | Frontend API service layer |
 | `backend/services/candle_service.py` | ~280 | Core OHLCV business logic (shared) |
 | `backend/api/klines.py` | ~170 | OHLCV REST endpoint (thin handler) |
 | `backend/api/historical.py` | ~90 | Historical range queries |
 | `backend/api/websocket.py` | ~135 | WebSocket real-time stream |
 | `src/lakehouse/pipeline.py` | ~220 | Spark Streaming → Iceberg |
-| `frontend/src/App.js` | 290 | Main React app layout |
+| `frontend/src/App.tsx` | ~240 | Main React app layout |
 | `src/batch/maintenance.py` | ~130 | Iceberg compaction |
 | `src/batch/aggregate.py` | ~120 | Spark 1m→1h aggregation |
 | `orchestration/assets.py` | 151 | Dagster assets + schedules |
@@ -79,14 +79,17 @@ project-root/
 │   ├── processing/            # Flink pipeline and writers
 │   ├── lakehouse/             # Spark structured streaming to Iceberg
 │   └── batch/                 # Historical backfill and maintenance jobs
-├── frontend/                  # React SPA (CRA + TailwindCSS)
+├── frontend/                  # React 19 SPA (Vite + TypeScript)
 │   └── src/
-│       ├── components/        # 15 components + chart/ subdir
-│       ├── services/          # marketDataService.js
-│       ├── hooks/             # useCandlestickData.js
-│       ├── contexts/          # AuthContext.js
-│       ├── i18n/              # translations.js, index.js
-│       └── utils/             # storageHelpers.js
+│       ├── components/        # 16 components (.tsx) + chart/ subdir
+│       │   └── chart/         # chartConstants.ts, indicatorUtils.ts, OHLCVBar.tsx, etc.
+│       ├── services/          # marketDataService.ts, symbolMetaService.ts
+│       ├── hooks/             # useApiCall.ts, useSymbolMeta.ts
+│       ├── contexts/          # AuthContext.tsx
+│       ├── i18n/              # translations.ts, index.tsx (~130 keys, en + vi)
+│       ├── types/             # index.ts (shared TS interfaces)
+│       ├── data/              # fallbackSymbolMeta.ts (~90 symbols)
+│       └── utils/             # storageHelpers.ts, errors.ts
 ├── orchestration/             # Dagster assets + workspace.yaml
 ├── schemas/                   # 4 Avro schemas (ticker, kline, trade, depth)
 ├── config/                    # spark-defaults.conf
@@ -111,11 +114,10 @@ project-root/
 ### 2.1 General Rules
 
 1. **Always update this TRACKING.md** after completing any task — add to changelog, update file sizes if changed, note any new patterns or gotchas discovered.
-2. **Never commit this file** — it's in `.gitignore`.
-3. **Read this file first** at the start of every session to re-establish context.
-4. **Preserve existing comments and docstrings** unless the user explicitly says to modify them.
-5. **Follow existing code patterns** — match the style, naming conventions, and structure already in use.
-6. **Incremental refactoring** — refactoring is crucial but can break functional code. Treat it step-by-step and double-check to ensure new code runs as performant or better without breaking anything major.
+2. **Read this file first** at the start of every session to re-establish context.
+3. **Preserve existing comments and docstrings** unless the user explicitly says to modify them.
+4. **Follow existing code patterns** — match the style, naming conventions, and structure already in use.
+5. **Incremental refactoring** — refactoring is crucial but can break functional code. Treat it step-by-step and double-check to ensure new code runs as performant or better without breaking anything major.
 
 ### 2.2 Code Style & Patterns
 
@@ -127,13 +129,18 @@ project-root/
    - Environment variables read from `backend/core/config.py`
    - Flux queries for InfluxDB, SQL for Trino
    - Avro serialization for Kafka (Confluent wire format)
-2. **JavaScript (frontend):** Follow existing patterns:
-   - React 18 functional components with hooks (using `.jsx` extension)
-   - Vite for build tooling (fast HMR, `import.meta.env` for environment variables)
+2. **TypeScript (frontend):** Follow existing patterns:
+   - React 19 functional components with hooks (`.tsx` extension, strict TypeScript)
+   - Vite 6 for build tooling (`import.meta.env` for environment variables)
+   - All props and state must have explicit TypeScript interfaces
    - TailwindCSS for styling
-   - lightweight-charts v5.1.0 API
-   - `marketDataService.js` as the single API layer
+   - lightweight-charts v5.1.0 API (use `any` refs for series instances)
+   - `marketDataService.ts` as the single API service layer
+   - `symbolMetaService.ts` for dynamic symbol metadata (CoinGecko + localStorage 24h cache)
+   - Centralized error handling via `useApiCall` hook + `ToastProvider`
+   - Full i18n via `useI18n()` hook — no hardcoded user-facing strings
    - Time convention: lightweight-charts uses seconds, API uses milliseconds
+   - Shared types live in `src/types/index.ts`
 3. **Docker:** Changes to services must be reflected in `docker-compose.yml`. Use existing build patterns. For local development, prefer using `make dev` and `make prod` workflows.
 
 ### 2.3 Language
@@ -145,7 +152,7 @@ project-root/
 ### 2.4 Testing & Verification
 
 1. Before finalizing changes, verify the logic is consistent across layers (e.g., Flink writer → KeyDB key → FastAPI reader → Frontend consumer).
-2. If modifying API endpoints, ensure frontend `marketDataService.js` is updated accordingly.
+2. If modifying API endpoints, ensure frontend `marketDataService.ts` is updated accordingly.
 3. If changing docker-compose, verify dependencies and health checks are correct.
 
 ### 2.5 Key Gotchas to Remember
@@ -176,8 +183,7 @@ project-root/
 ## 3. Current State & Notes
 
 ### Known Stable Commit
-- `b3722b6` — "Most stable version to date" (per commit message)
-- `059d9d5` — "This code is at a stable state. Revert to this one if anything bad happens."
+- `0802fe0` — Latest known working commit before refactoring.
 
 ### Active Configuration
 - Flink parallelism: 1
@@ -193,28 +199,47 @@ project-root/
 
 ### Frontend Component Tree (current)
 ```
-App.jsx (TradingDashboard)
-├── Header.jsx
+App.tsx (TradingDashboard)
+├── ErrorBoundary.tsx
+├── ToastProvider.tsx
+├── I18nProvider (i18n/index.tsx)
+├── AuthContext.Provider (contexts/AuthContext.tsx)
+├── Header.tsx
 │   ├── Navigation drawer
-│   └── LanguageSwitcher.jsx
-├── DrawingToolbar.jsx
-│   └── ToolSettingsPopup.jsx
-├── CandlestickChart.jsx (997 lines — CORE)
-│   ├── MarketSelector.jsx
-│   ├── DateRangePicker.jsx
-│   ├── chart/IndicatorPanel.jsx
-│   ├── chart/OHLCVBar.jsx
-│   ├── chart/OscillatorPane.jsx
-│   ├── chart/chartConstants.js
-│   ├── chart/indicatorUtils.js
-│   ├── ChartOverlay.jsx (drawings)
-│   ├── OrderBook.jsx
-│   └── RecentTrades.jsx
-├── Watchlist.jsx
-├── OverviewChart.jsx
-├── SystemHealthCard.jsx
-├── AuthModal.jsx
-└── ErrorBoundary.jsx
+│   └── LanguageSwitcher.tsx
+├── DrawingToolbar.tsx
+│   └── ToolSettingsPopup.tsx
+├── CandlestickChart.tsx (~1020 lines — CORE)
+│   ├── MarketSelector.tsx (+ useSymbolMeta)
+│   ├── DateRangePicker.tsx
+│   ├── chart/IndicatorPanel.tsx
+│   ├── chart/OHLCVBar.tsx
+│   ├── chart/OscillatorPane.tsx
+│   ├── chart/chartConstants.ts
+│   ├── chart/indicatorUtils.ts
+│   ├── ChartOverlay.tsx (drawings)
+│   ├── OrderBook.tsx
+│   └── RecentTrades.tsx
+├── Watchlist.tsx (+ useSymbolMeta)
+├── OverviewChart.tsx (+ useSymbolMeta)
+├── SystemHealthCard.tsx
+└── AuthModal.tsx
+```
+
+### Frontend Type System
+```
+src/types/index.ts:
+  Candle, RawCandle, Ticker, OrderBookEntry, OrderBookData, Trade,
+  SymbolInfo, SymbolMeta, WatchlistItem, HistoricalRange, HealthData,
+  IndicatorSettings, DrawingPoint, Drawing, TooltipData,
+  UserSession, AuthResult, Timeframe, WatchlistFilter
+```
+
+### Frontend Build Output
+```
+dist/index.html                   0.74 kB │ gzip:   0.40 kB
+dist/assets/index-*.css          22.77 kB │ gzip:   4.77 kB
+dist/assets/index-*.js          471.79 kB │ gzip: 146.62 kB
 ```
 
 ---
@@ -222,6 +247,35 @@ App.jsx (TradingDashboard)
 ## 4. Changelog
 
 All changes made by AI assistant, in reverse chronological order.
+
+### 2026-04-28 — Session 5: Frontend TypeScript Migration
+
+**Task:** Complete migration of the frontend from JavaScript/JSX to TypeScript/TSX. Upgrade React 18→19. Add centralized error handling, dynamic symbol metadata service, and full i18n coverage.
+
+**Changes:**
+1. **TypeScript Toolchain** — Added `tsconfig.json` (strict mode), `tsconfig.node.json`, `vite-env.d.ts`. Updated `package.json` with React 19, TypeScript 5.7+, `@types/react` 19.
+2. **Type Definitions (`src/types/index.ts`)** — Created 18 shared interfaces: `Candle`, `Ticker`, `Drawing`, `IndicatorSettings`, `HistoricalRange`, etc.
+3. **Core Service Migration** — `marketDataService.js` → `.ts`, `storageHelpers.js` → `.ts`, `translations.js` → `.ts` (TranslationKey type), `AuthContext.jsx` → `.tsx`, `i18n/index.jsx` → `.tsx`.
+4. **Centralized Error Handling** — Created `src/utils/errors.ts` (AppError hierarchy), `src/hooks/useApiCall.ts` (generic fetcher with retry), `src/components/ToastProvider.tsx` (toast notification system). Wired into `index.tsx`.
+5. **Dynamic Symbol Metadata** — Created `src/services/symbolMetaService.ts` (CoinGecko API + 24h localStorage cache), `src/data/fallbackSymbolMeta.ts` (~90 symbols), `src/hooks/useSymbolMeta.ts`. Integrated into MarketSelector, OverviewChart, Watchlist.
+6. **Component Migration (20 files)** — Migrated all 16 components + 4 chart sub-modules from `.jsx`/`.js` to `.tsx`/`.ts`. Added typed props, state, and refs throughout. Key files: CandlestickChart (~1020 lines), ChartOverlay (~430 lines).
+7. **i18n Completion** — Added ~50 new translation keys (en + vi). Replaced all hardcoded English and Vietnamese strings with `t()` calls. Total: ~130 keys.
+8. **Entry Points** — `index.jsx` → `index.tsx`, `App.jsx` → `App.tsx`.
+9. **Nginx** — Updated asset caching from `/static/` to `/assets/` (Vite output path). Added font/image caching rules.
+10. **Build Verification** — `tsc --noEmit` = 0 errors. `vite build` succeeds (471.79 kB JS gzipped to 146.62 kB).
+
+**Deleted files:** All `.jsx` and `.js` source files in `frontend/src/` (replaced by `.tsx`/`.ts` counterparts).
+
+**Notes/Gotchas discovered:**
+- lightweight-charts v5 `lineWidth` only accepts integer union `1 | 2 | 3 | 4`, not floats like `1.5`. Must cast.
+- lightweight-charts `time` must be cast to `UTCTimestamp` when passing raw `number` values.
+- `tsconfig.json` `references` to `tsconfig.node.json` requires `composite: true` on the referenced config, which conflicts with `noEmit: true`. Simplest fix: remove the reference since it's only for `vite.config.ts`.
+- `IndicatorSettings` should be a flexible per-indicator interface (with index signature) rather than a rigid top-level structure, since components access it as `Record<string, IndicatorSettings>`.
+
+**Impact:**
+- Frontend: Complete rewrite — 27 files migrated, 7 new files created, all legacy deleted.
+- Infrastructure: nginx.conf asset caching updated.
+- Docs: TRACKING.md and DOCUMENTATION.md updated.
 
 ### 2026-04-25 — Session 4: Data Processing Layer Refactoring
 
