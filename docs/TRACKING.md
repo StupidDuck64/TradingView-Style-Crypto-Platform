@@ -253,6 +253,46 @@ dist/assets/index-*.js          471.79 kB │ gzip: 146.62 kB
 
 All changes made by AI assistant, in reverse chronological order.
 
+### 2026-05-02 — Session 7: Comprehensive Test Suite
+
+**Task:** Implement the remaining tests across all 5 test categories (unit, integration, e2e, security, performance).
+
+**Changes:**
+1. **Unit Tests — Constants (`test_constants.py`, 11 tests)** — Interval definitions, symbol regex validation, data limit sanity checks, and hourly interval groupings.
+2. **Unit Tests — Binance Mappers (`test_binance_mappers.py`, 12 tests)** — Ticker, aggregate trade, kline, and depth message conversion from raw Binance JSON to canonical format.
+3. **Unit Tests — Binance Client (`test_binance_client.py`, 12 tests)** — Stream name builders, URL construction, default/custom config, and mapper delegation.
+4. **Unit Tests — Models Extended (`test_models_extended.py`, 16 tests)** — Edge cases for all Pydantic models: zero/large values, type coercion, JSON roundtrip, TradeResponse, OrderBookEntry, degraded health states.
+5. **Integration Tests — Health API (`test_api_health.py`, 5 tests)** — All-OK, degraded states (Redis/InfluxDB/Trino down), and latency metrics.
+6. **Integration Tests — Ticker API (`test_api_ticker.py`, 5 tests)** — Single ticker retrieval, 404, case normalization, all-tickers listing, empty state.
+7. **Integration Tests — Symbols API (`test_api_symbols.py`, 5 tests)** — USDT/BTC pair formatting, unknown quote, sort order, empty state.
+8. **Integration Tests — Trades API (`test_api_trades.py`, 5 tests)** — Data retrieval, side detection, 404, limit bounds.
+9. **Integration Tests — Indicators API (`test_api_indicators.py`, 4 tests)** — Full/partial data, 404, case normalization.
+10. **Integration Tests — Klines API (`test_api_klines.py`, 7 tests)** — Symbol/interval validation, limit bounds, cache hit, 1s source, missing params.
+11. **Integration Tests — Historical API (`test_api_historical.py`, 8 tests)** — Date range validation, overflow timestamps, empty result.
+12. **Security Tests — API Security (`test_api_security.py`, 8 tests)** — SQL injection through endpoints, XSS, path traversal, CORS, oversized queries, null bytes, emoji.
+13. **Performance Tests — Benchmarks (`test_benchmarks.py`, 9 tests)** — Aggregation (10K/50K candles), merging (10K/overlap), validation/conversion batches with explicit time limits.
+14. **E2E Tests — App Routes (`test_app_routes.py`, 6 tests)** — Route registration, app metadata, OpenAPI schema, docs endpoint, 404, router tags.
+15. **Infrastructure** — Created `tests/integration/`, `tests/e2e/`, `tests/performance/` packages with `__init__.py`.
+
+**Test counts:**
+| Category    | Before | Added | Total |
+|---|---|---|---|
+| Unit        | 29     | 51    | 80    |
+| Integration | 0      | 39    | 39    |
+| Security    | 9      | 8     | 17    |
+| Performance | 0      | 9     | 9     |
+| E2E         | 0      | 6     | 6     |
+| **Total**   | **40** | **121** | **161** |
+
+**Notes/Gotchas discovered:**
+- WebSocket routes (`@router.websocket`) don't appear in the OpenAPI schema — FastAPI excludes them from `/openapi.json` paths since WS uses a different protocol.
+- `pytest-asyncio` 1.x with `asyncio_mode = "auto"` triggers a config warning on newer pytest; consider upgrading to `pytest-asyncio>=0.21` for `mode = "auto"` support.
+- Python 3.14 on Windows uses `py` launcher, not `python`. Test commands should use `py -m pytest`.
+
+**Impact:**
+- Testing: 121 new tests, 161 total (all passing). Coverage now spans all backend layers: models, services, API endpoints, exchange abstraction, and constants.
+
+
 ### 2026-04-28 — Session 6: Infrastructure & Pipeline Restoration
 
 **Task:** Fix the broken data pipeline, resolving Docker build errors, network bindings, and Flink `RESTARTING` loops.
